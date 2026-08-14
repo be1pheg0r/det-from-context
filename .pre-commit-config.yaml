@@ -1,0 +1,26 @@
+# Установка (один раз на клон):
+#   pip install pre-commit && pre-commit install
+# Хуки ставят ruff в собственное окружение — зависимости проекта не нужны.
+#
+# ⚠️ Локальный хук обходится через `git commit --no-verify`. Настоящее
+# принуждение — job `lint` в .github/workflows/ci.yml плюс branch protection
+# на master. Хук здесь для того, чтобы не гонять CI ради опечатки.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.2
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Веса RF-DETR и куски датасета в git не кладём.
+        args: [--maxkb=1024]

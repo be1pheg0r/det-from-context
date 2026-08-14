@@ -1,0 +1,5 @@
+{
+  "_base_": "_base.json",
+  "_comment": "Ablation-контроль: feature-level контекст над K кадрами. Не основная ветка.",
+  "context": {"name": "cross_attn", "fusion": "residual"}
+}

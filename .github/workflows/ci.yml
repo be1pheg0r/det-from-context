@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: check --output-format=github
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: format --check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Тесты не импортируют torch — проверяют контракты, конфиги и логику
+      # индексации. Поэтому ставится только pytest, а не зависимости проекта.
+      # Если тест понадобилось сделать torch-зависимым — скорее всего он проверяет
+      # не то: тяжёлое место ему в отдельном ручном прогоне, не в CI.
+      - run: pip install pytest
+      - run: pytest -q

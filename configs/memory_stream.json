@@ -1,0 +1,6 @@
+{
+  "_base_": "_base.json",
+  "_comment": "Milestone 3: StreamPETR-очередь + motion-aware выравнивание + гейт записи.",
+  "data": {"clip_len": 8},
+  "context": {"name": "stream_queue", "fusion": "gated_residual", "write_gate": true, "motion": "constant_velocity"}
+}
