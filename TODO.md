@@ -80,7 +80,7 @@ Settings → Rules → New branch ruleset → require status checks `lint` и `t
 **DoD:**
 ```python
 model = build_model(cfg)
-output = model(*make_dummy_batch())   # без датасета и без RF-DETR
+output = model(*make_dummy_batch())  # без датасета и без RF-DETR
 ```
 
 ⚠️ Это блокирующая задача. Пока контракты не заморожены, остальные пишут
@@ -117,7 +117,7 @@ output = model(*make_dummy_batch())   # без датасета и без RF-DET
       кадр, корректность преобразования боксов, отсутствие утечки будущего
 
 **DoD:**
-```python
+```text
 batch.images              # [B, C, H, W]
 context.images            # [B, K, C, H, W]
 context.valid_mask        # [B, K]

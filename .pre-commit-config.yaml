@@ -7,7 +7,8 @@
 # на master. Хук здесь для того, чтобы не гонять CI ради опечатки.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.2
+    # Должно совпадать с ruff== в pyproject.toml и version в ci.yml.
+    rev: v0.16.3
     hooks:
       - id: ruff-check
         args: [--fix]

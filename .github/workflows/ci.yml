@@ -9,23 +9,31 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Одна версия на CI, pre-commit и pyproject — иначе «локально зелено, в CI красно».
+  RUFF_VERSION: 0.16.3
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/ruff-action@v3
         with:
+          version: ${{ env.RUFF_VERSION }}
           args: check --output-format=github
       - uses: astral-sh/ruff-action@v3
         with:
+          version: ${{ env.RUFF_VERSION }}
+          # ruff форматирует и python-блоки внутри .md, поэтому TODO.md тоже
+          # проходит проверку. Схемы полей, не являющиеся кодом, помечать ```text.
           args: format --check
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
