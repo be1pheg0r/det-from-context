@@ -2,7 +2,6 @@
 name = "context-detection"
 version = "0.1.0"
 requires-python = ">=3.12"
-# TODO(чел.1): зафиксировать версии перед первым общим прогоном.
 dependencies = [
     "torch",
     "torchvision",
@@ -10,12 +9,14 @@ dependencies = [
     "numpy",
     "pillow",
     "matplotlib",
+    "pydantic",
+    "pytest",
 ]
 
 [project.optional-dependencies]
 # Версия ruff пиновая: она должна совпадать с rev в .pre-commit-config.yaml и
 # с version в CI, иначе «локально зелено, в CI красно».
-dev = ["pytest", "ruff==0.16.3"]
+dev = ["ruff==0.16.3"]
 
 [build-system]
 requires = ["setuptools>=68"]
