@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .registry import (
+    NEEDS_CONTEXT_FRAMES,
     ContextName,
     ContextStrategy,
     DatasetName,
@@ -107,14 +108,17 @@ class ExperimentConfig(_Section):
 
     @model_validator(mode="after")
     def _check(self) -> ExperimentConfig:
-        needs_frames = self.context.name == "cross_attn"
-        if needs_frames and not self.data.context_k:
+        name = self.context.name
+        if name in NEEDS_CONTEXT_FRAMES and not self.data.context_k:
+            raise ValueError(f"{name} читает пиксели контекстных кадров, а context_k=0")
+        # clip_len нужен только тем, кто переносит состояние с кадра на кадр.
+        # Feature-level ветки читают K кадров из ContextBatch и на одиночном
+        # кадре осмысленны — запрещать им clip_len=1 значит блокировать
+        # легитимный ablation-контроль сообщением, которое к ним не относится.
+        recurrent = name != "none" and name not in NEEDS_CONTEXT_FRAMES
+        if recurrent and self.data.clip_len < 2:
             raise ValueError(
-                "cross_attn читает пиксели контекстных кадров, а context_k=0"
-            )
-        if self.context.name != "none" and self.data.clip_len < 2:
-            raise ValueError(
-                f"ветка {self.context.name!r} переносит состояние между кадрами, "
+                f"ветка {name!r} переносит состояние между кадрами, "
                 "а clip_len=1: память никогда не будет прочитана"
             )
         return self

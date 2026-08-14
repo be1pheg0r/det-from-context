@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import torch
 
 from .config import ExperimentConfig, load_config
@@ -56,11 +58,17 @@ def build_detector(cfg: ExperimentConfig) -> DetectorAdapter:
     return detector
 
 
-def build_context_module(cfg: ExperimentConfig, dim: int) -> ContextModule:
+def build_context_module(cfg: ExperimentConfig) -> ContextModule:
     name = cfg.context.name
     cls = _CONTEXT_MODULES[name]  # имя уже провалидировано Literal'ом в конфиге
-    if name == "none":
-        return cls()
+    if inspect.isabstract(cls):
+        # read/write остались @abstractmethod → ветка ещё заготовка. Без этой
+        # ветки наружу летит "Can't instantiate abstract class" — правда, но
+        # чтобы её прочитать, надо знать про ABC.
+        raise NotImplementedError(
+            f"ветка контекста {name!r} ещё не реализована (Человек 4): "
+            f"{cls.__name__} не переопределяет read/write"
+        )
     # TODO(чел.4): у веток появятся собственные аргументы (num_slots, write_gate,
     # motion, horizon) — прокидывать отсюда, конфиг их уже несёт и валидирует.
     return cls()
@@ -70,7 +78,7 @@ def build_model(cfg: ExperimentConfig) -> ContextDetector:
     detector = build_detector(cfg)
     return ContextDetector(
         detector=detector,
-        context_module=build_context_module(cfg, detector.dim),
+        context_module=build_context_module(cfg),
         fusion=cfg.context.fusion,
         detach_state=cfg.train.detach_state,
     )
@@ -92,9 +100,16 @@ def make_dummy_batch(
 ) -> tuple[DetectionBatch, ContextBatch]:
     """Случайный батч правильной формы — без датасета и без RF-DETR.
 
-    valid_mask заполняется частично (первый элемент батча имитирует начало
-    последовательности), иначе маскирование у Человека 4 никогда не проверится
-    на dummy-прогоне и всплывёт только на реальных данных.
+    Батч намеренно неоднородный, иначе на dummy-прогоне не проверится ничего
+    из того, ради чего он существует, и всплывёт только на реальных данных:
+
+      * элемент 0 — первый кадр сцены: истории нет (все слоты невалидны),
+        frame_id=0, is_sequence_start=True. Единственное, что заставляет
+        ContextDetector зайти в ветку reset — без него утечка памяти между
+        сценами не ловится ничем;
+      * элемент 1 — частичная история: половина слотов заглушки. Проверяет
+        маскирование у Человека 4;
+      * остальные — полная история.
     """
 
     def rand(*shape: int) -> torch.Tensor:
@@ -112,8 +127,12 @@ def make_dummy_batch(
     ]
 
     valid = torch.ones(batch_size, context_k, dtype=torch.bool, device=device)
+    start = torch.zeros(batch_size, dtype=torch.bool, device=device)
     if batch_size and context_k:
-        valid[0, : max(1, context_k // 2)] = False  # начало последовательности
+        valid[0] = False  # первый кадр сцены: истории нет...
+        start[0] = True  # ...значит память для него надо сбросить
+        if batch_size > 1:
+            valid[1, : max(1, context_k // 2)] = False  # частичная история
 
     offsets = (
         torch.arange(context_k, 0, -1, device=device, dtype=torch.float32).expand(
@@ -123,13 +142,18 @@ def make_dummy_batch(
     )  # ~25 fps
     offsets = offsets * valid
 
+    # Сколько кадров сцены уже прошло = сколько слотов истории заполнено.
+    # Иначе frame_id противоречит valid_mask, и первый же тест Человека 2 на
+    # согласованность истории с индексом упрётся в кривую фикстуру.
+    frame_id = valid.sum(1)
+
     batch = DetectionBatch(
         images=rand(batch_size, 3, image_size, image_size),
         targets=targets,
         sequence_id=[f"seq{i}" for i in range(batch_size)],
-        frame_id=torch.full((batch_size,), context_k, dtype=torch.int64, device=device),
-        timestamp=torch.full((batch_size,), context_k * 0.04, device=device),
-        is_sequence_start=torch.zeros(batch_size, dtype=torch.bool, device=device),
+        frame_id=frame_id,
+        timestamp=frame_id.to(torch.float32) * 0.04,
+        is_sequence_start=start,
     )
     context = ContextBatch(
         images=rand(batch_size, context_k, 3, image_size, image_size)

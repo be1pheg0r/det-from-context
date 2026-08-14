@@ -9,11 +9,14 @@ Tensor, поэтому проверить их без torch физически �
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 import torch
 from pydantic import ValidationError
 
-from context_detection.build import build_model, make_dummy_batch
+from context_detection import registry
+from context_detection.build import _CONTEXT_MODULES, build_model, make_dummy_batch
 from context_detection.config import ExperimentConfig, load_config
 from context_detection.contracts import (
     ContextBatch,
@@ -24,6 +27,8 @@ from context_detection.contracts import (
 )
 from context_detection.models.detector import DetectorAdapter
 from context_detection.models.memory import ContextModule
+
+CONFIG_DIR = pathlib.Path(__file__).parent.parent / "configs"
 
 DUMMY_CFG = ExperimentConfig.model_validate(
     {
@@ -86,6 +91,19 @@ def test_dummy_batch_is_valid():
     assert not context.valid_mask.all(), "dummy обязан содержать невалидные слоты"
 
 
+def test_dummy_batch_exercises_the_reset_path():
+    """Без is_sequence_start=True хотя бы на одном элементе ContextDetector
+    никогда не заходит в context_module.reset, и утечку памяти между сценами
+    не ловит вообще ничто — ни один dummy-прогон, ни CI."""
+    batch, context = make_dummy_batch(batch_size=3, context_k=4, image_size=32)
+    assert batch.is_sequence_start.any(), "reset-ветка не будет вызвана ни разу"
+    # Начало сцены — это отсутствие истории. Иначе фикстура противоречит сама
+    # себе и Человек 4 отлаживается против невозможного состояния.
+    starts = batch.is_sequence_start
+    assert not context.valid_mask[starts].any()
+    assert (batch.frame_id == context.valid_mask.sum(1)).all()
+
+
 def test_unnormalized_boxes_rejected():
     """Самый частый баг датасета: забыли поделить на размер изображения."""
     batch, _ = make_dummy_batch(batch_size=1, context_k=2, image_size=32)
@@ -146,6 +164,36 @@ def test_is_sequence_start_defaults_to_false():
     )
     assert plain.is_sequence_start is not None
     assert not plain.is_sequence_start.any()
+
+
+def test_non_finite_and_out_of_range_boxes_rejected():
+    """Проверка боксов свёрнута в один перенос на хост (aminmax вместо
+    isfinite+min+max) — покрытие NaN/±Inf при этом теряется первым."""
+    from context_detection.contracts import _boxes_normalized
+
+    for bad in (float("nan"), float("inf"), float("-inf"), 10.0):
+        with pytest.raises(ValueError):
+            _boxes_normalized("b", torch.tensor([[bad, 0.5, 0.1, 0.1]]))
+
+
+def test_query_delta_is_required():
+    """None — осмысленный ответ «контекста нет», и ветка обязана произнести
+    его вслух. С дефолтом забытое поле тихо вырождает прогон в baseline."""
+    with pytest.raises(ValidationError):
+        ContextOutput(diagnostics={"active_slots": 0})
+
+
+def test_dim_not_divisible_by_eight_builds():
+    """GroupNorm(8, dim) требовал dim % 8 == 0, а конфиг проверяет только
+    dim % num_heads: dim=12 проходил валидацию и падал внутри torch."""
+    cfg = ExperimentConfig.model_validate(
+        {
+            "data": {"name": "dummy", "clip_len": 2},
+            "detector": {"name": "dummy", "dim": 12, "num_heads": 4},
+        }
+    )
+    batch, context = make_dummy_batch(batch_size=1, context_k=2, image_size=32)
+    assert build_model(cfg)(batch, context)[0].queries.shape[-1] == 12
 
 
 def test_nan_in_query_delta_rejected():
@@ -266,10 +314,43 @@ def test_no_context_equals_bare_detector():
 
 
 def test_dummy_config_file_builds():
-    model = build_model(load_config("configs/dummy.json"))
+    model = build_model(load_config(CONFIG_DIR / "dummy.json"))
     batch, context = make_dummy_batch(batch_size=1, context_k=2, image_size=32)
     output, _ = model(batch, context)
     assert output.logits.shape[0] == 1
+
+
+def test_dummy_config_trains_the_backbone():
+    """configs/dummy.json — точка входа для отладки цикла обучения. Если он
+    унаследует freeze_backbone из _base.json, лосс будет падать за счёт голов,
+    и «сквозной прогон обучается» окажется неправдой."""
+    model = build_model(load_config(CONFIG_DIR / "dummy.json"))
+    frozen = [n for n, p in model.named_parameters() if not p.requires_grad]
+    assert not frozen, f"на dummy-конфиге заморожено: {frozen}"
+
+
+def test_builder_covers_every_registered_branch():
+    """_CONTEXT_MODULES — второй список имён рядом с registry. Разъедется —
+    ветка упадёт голым KeyError на сборке."""
+    assert set(_CONTEXT_MODULES) == registry.CONTEXT_MODULES
+
+
+def test_needs_context_frames_matches_registry():
+    """registry.NEEDS_CONTEXT_FRAMES (валидация конфига, без torch) и атрибут
+    класса (рантайм) — одно знание в двух местах. Разъедется — ветка пройдёт
+    валидацию с context_k=0 и молча получит encoded_context=None."""
+    actual = {n for n, cls in _CONTEXT_MODULES.items() if cls.needs_context_frames}
+    assert actual == registry.NEEDS_CONTEXT_FRAMES
+
+
+def test_unimplemented_branch_reports_itself():
+    """Заготовки Человека 4 не переопределяют read/write и потому абстрактны.
+    Наружу должно лететь имя ветки, а не 'Can't instantiate abstract class'."""
+    cfg = ExperimentConfig.model_validate(
+        {"context": {"name": "ema_slot"}, "data": {"clip_len": 2, "name": "dummy"}}
+    )
+    with pytest.raises(NotImplementedError, match="ema_slot"):
+        build_model(cfg)
 
 
 if __name__ == "__main__":

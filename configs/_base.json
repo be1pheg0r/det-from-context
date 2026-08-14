@@ -1,15 +1,15 @@
 {
-  "_comment": "TODO(чел.1): базовый конфиг. Остальные наследуют через _base_.",
+  "_comment": "Базовый конфиг, остальные наследуют через _base_. root=null намеренно: путь к датасету машинный, задаётся override'ом data.root=... Плейсхолдер-строка вместо null глушила бы валидатор.",
   "data": {
     "name": "imagenet_vid",
-    "root": "TODO",
+    "root": null,
     "context_k": 4,
     "context_strategy": "prev_k",
     "clip_len": 4
   },
   "detector": {
     "name": "rfdetr",
-    "variant": "TODO: nano|small|base|large",
+    "variant": "base",
     "weights": null,
     "freeze_backbone": true,
     "num_queries": 300,

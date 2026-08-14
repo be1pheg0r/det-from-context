@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -59,11 +60,14 @@ def _boxes_normalized(name: str, boxes: Tensor) -> None:
     за единицу или центр оказывается меньше половины ширины)."""
     if boxes.numel() == 0:
         return
-    if not torch.isfinite(boxes).all():
-        raise ValueError(f"{name}: NaN/Inf в боксах")
-    # detach: боксы приходят из графа, а .item() на requires_grad-тензоре
-    # предупреждает и без нужды тянет граф в питон.
-    lo, hi = float(boxes.detach().min()), float(boxes.detach().max())
+    # Один перенос на хост вместо трёх (isfinite().all(), min(), max()): каждый
+    # float()/bool() от CUDA-тензора — это синхронизация, а валидатор зовётся на
+    # каждом кадре и на каждом элементе батча. aminmax протаскивает NaN, поэтому
+    # отдельная проверка на конечность не нужна, а Inf ловится границами.
+    # detach: боксы приходят из графа, .item() на requires_grad тянет граф в питон.
+    lo, hi = torch.stack(boxes.detach().aminmax()).tolist()
+    if math.isnan(lo) or math.isnan(hi):
+        raise ValueError(f"{name}: NaN в боксах")
     if lo < -1e-4 or hi > 1.0 + 1e-4:
         raise ValueError(
             f"{name}: боксы вне [0, 1] (min={lo:.4f}, max={hi:.4f}). "
@@ -123,6 +127,8 @@ class DetectionBatch(_Contract):
                 raise ValueError(f"targets[{i}]: нужны ключи 'boxes' и 'labels'")
             _shape(f"targets[{i}]['boxes']", t["boxes"], None, 4)
             _boxes_normalized(f"targets[{i}]['boxes']", t["boxes"])
+            if t["labels"].dtype != torch.int64:
+                raise ValueError(f"targets[{i}]['labels'] должен быть int64")
             if t["labels"].shape[0] != t["boxes"].shape[0]:
                 raise ValueError(
                     f"targets[{i}]: labels ({t['labels'].shape[0]}) != "
@@ -138,8 +144,21 @@ class DetectionBatch(_Contract):
             if self.is_sequence_start.dtype != torch.bool:
                 raise ValueError("is_sequence_start должен быть bool")
 
+        # is_sequence_start и targets проверяются наравне с остальным: первый
+        # естественно рождается на CPU (сравнение sequence_id в collate_fn) и
+        # роняет torch.where внутри MemoryState.reset уже в шаге модели, вторые —
+        # матчер Человека 5. Обе ошибки без этой проверки прилетают без ссылки
+        # на батч, который их породил.
         _same_device(
-            images=self.images, frame_id=self.frame_id, timestamp=self.timestamp
+            images=self.images,
+            frame_id=self.frame_id,
+            timestamp=self.timestamp,
+            is_sequence_start=self.is_sequence_start,
+            **{
+                f"targets_{i}_{key}": t[key]
+                for i, t in enumerate(self.targets)
+                for key in ("boxes", "labels")
+            },
         )
         return self
 
@@ -338,13 +357,6 @@ class MemoryState(_Contract):
             raise ValueError("mask должен быть bool")
         if not bool(mask.any()):
             return self
-        fresh = MemoryState.empty(
-            self.batch_size,
-            self.num_slots,
-            self.feature.shape[-1],
-            device=self.feature.device,
-            dtype=self.feature.dtype,
-        )
 
         def clear(old: Tensor | None) -> Tensor | None:
             """Обнулить строки батча по маске. Маска расширяется под любое
@@ -354,10 +366,14 @@ class MemoryState(_Contract):
             m = mask.view(-1, *([1] * (old.dim() - 1)))
             return torch.where(m, torch.zeros_like(old), old)
 
+        # Единственное поле, которое обнуляется не в ноль, а в вырожденный
+        # центр кадра — как в empty(). Строить ради него весь empty() значит
+        # платить семью аллокациями и полным проходом валидации на каждой
+        # границе сцены.
         m2 = mask.view(-1, 1, 1)
         return MemoryState.model_construct(
             feature=clear(self.feature),
-            box=torch.where(m2, fresh.box, self.box),
+            box=torch.where(m2, torch.full_like(self.box, 0.5), self.box),
             timestamp=clear(self.timestamp),
             confidence=clear(self.confidence),
             age=clear(self.age),
@@ -372,7 +388,13 @@ class ContextOutput(_Contract):
 
     #: [B, N, D]; None = контекста нет (NoContext). Складывается с queries
     #: детектора выбранным fusion-режимом.
-    query_delta: Tensor | None = None
+    #:
+    #: Без дефолта намеренно. None здесь — осмысленный ответ «контекста нет»,
+    #: и ветка обязана произнести его вслух. С `= None` ранний return в read(),
+    #: забывший выставить поле, тихо выродит прогон в baseline: Fusion вернёт
+    #: queries как есть, ΔAP выйдет нулевым, и это прочитается как «память не
+    #: помогает» вместо «память не подключена».
+    query_delta: Tensor | None
     memory_state: MemoryState | None = None
     #: Диагностика для логов и визуализации: active_slots, mean_age,
     #: read_weights [B, N, S], write_rate, evicted. Скаляры уходят в лог,

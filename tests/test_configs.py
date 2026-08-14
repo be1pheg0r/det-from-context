@@ -18,6 +18,12 @@ from context_detection.config import ExperimentConfig, load_config
 CONFIG_DIR = pathlib.Path(__file__).parent.parent / "configs"
 CONFIGS = sorted(p for p in CONFIG_DIR.glob("*.json") if not p.name.startswith("_"))
 
+#: Путь к датасету машинный, в репозитории его нет. Конфиги хранят root=null,
+#: и это не заглушка — валидатор обязан ронять конфиг без root (см.
+#: test_missing_root_rejected). Тесты подставляют его так же, как это сделает
+#: Человек 5 на своей машине.
+ROOT = ["data.root=/tmp/dataset"]
+
 
 def test_configs_found():
     assert CONFIGS, "конфиги не найдены"
@@ -27,13 +33,23 @@ def test_every_config_loads():
     """Раскрытие _base_ + валидация. Ловит опечатку в имени ветки и лишний
     ключ (extra='forbid') до запуска обучения."""
     for path in CONFIGS:
-        cfg = load_config(path)
+        cfg = load_config(path, ROOT)
         assert isinstance(cfg, ExperimentConfig), path.name
+
+
+def test_missing_root_rejected():
+    """Конфиг без root не должен «проходить». Плейсхолдер вида "TODO" здесь
+    страшнее отсутствия проверки: он делает тест выше зелёным и врёт."""
+    non_dummy = [p for p in CONFIGS if p.name != "dummy.json"]
+    assert non_dummy, "нечего проверять"
+    for path in non_dummy:
+        with pytest.raises(ValidationError):
+            load_config(path)
 
 
 def test_every_branch_has_a_config():
     """Ветка без конфига до сетки сравнения не доедет."""
-    named = {load_config(p).context.name for p in CONFIGS}
+    named = {load_config(p, ROOT).context.name for p in CONFIGS}
     missing = registry.CONTEXT_MODULES - named
     assert not missing, f"нет конфига для веток: {sorted(missing)}"
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 
 import torch
@@ -76,15 +77,19 @@ class DummyDetector(DetectorAdapter):
         self.num_queries = num_queries
 
         # Трёхуровневый «backbone + projector»: каждый уровень вдвое мельче.
+        # gcd, а не 8: конфиг проверяет только dim % num_heads, и dim=12 с
+        # num_heads=4 проходил валидацию, а падал внутри GroupNorm без единого
+        # упоминания ключа конфига, который это вызвал.
+        groups = math.gcd(8, dim)
         self.stem = nn.Sequential(
             nn.Conv2d(3, dim, 3, stride=2, padding=1),
-            nn.GroupNorm(8, dim),
+            nn.GroupNorm(groups, dim),
             nn.ReLU(inplace=True),
         )
         self.scales = nn.ModuleList(
             nn.Sequential(
                 nn.Conv2d(dim, dim, 3, stride=2, padding=1),
-                nn.GroupNorm(8, dim),
+                nn.GroupNorm(groups, dim),
                 nn.ReLU(inplace=True),
             )
             for _ in range(2)
@@ -138,12 +143,15 @@ class DummyDetector(DetectorAdapter):
                 }
             )
 
-        logits, boxes, refs = self._heads(queries)
+        # Последний слой уже посчитан в цикле — пересчёт дал бы три лишних
+        # matmul и три лишних узла графа за forward. num_decoder_layers > 0
+        # гарантирован конфигом (Field(gt=0)), так что layers непуст.
+        last = layers[-1]
         return DetectorOutput(
-            logits=logits,
-            boxes=boxes,
+            logits=last["logits"],
+            boxes=last["boxes"],
             queries=queries,
-            reference_points=refs,
+            reference_points=last["reference_points"],
             features=features,
             decoder_layers=layers,
         )

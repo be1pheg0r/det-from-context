@@ -43,5 +43,7 @@ jobs:
 
       # Контракты стали Pydantic поверх Tensor, поэтому проверить их без torch
       # нельзя. CPU-колёса: GPU не нужен, обычный индекс тянет ~2.5 ГБ CUDA.
-      - run: pip install --extra-index-url https://download.pytorch.org/whl/cpu torch
+      # Именно --index-url, а не --extra-index-url: второй не заменяет PyPI, а
+      # добавляется к нему, и pip всё равно резолвит CUDA-сборку по версии.
+      - run: pip install --index-url https://download.pytorch.org/whl/cpu torch
       - run: pytest -q
