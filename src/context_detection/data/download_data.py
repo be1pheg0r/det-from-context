@@ -1,4 +1,3 @@
-
 """
 Скрипт для выборочного скачивания архивов BDD100K.
 
@@ -10,7 +9,7 @@
 
 2) mode="partial" — через remotezip: смотрим оглавление архива,
    выбираем файлы по расширению/маске и скачиваем
-   только их, целиком и корректно 
+   только их, целиком и корректно
 
 
 
@@ -18,13 +17,14 @@
     pip install requests remotezip tqdm
 """
 
-import os
 import fnmatch
+import os
+
 import requests
 from remotezip import RemoteZip
 from tqdm import tqdm
 
-GB = 1024 ** 3
+GB = 1024**3
 
 # ---------------------------------------------------------------------------
 # 1. Список всех доступных ссылок
@@ -48,8 +48,8 @@ URLS = {
     "DETECTION_2020_LABELS": "http://128.32.162.150/bdd100k/bdd100k_det_20_labels.zip",
 }
 
-VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv')
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv")
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 # ---------------------------------------------------------------------------
 # 2. НАСТРОЙКИ
@@ -76,9 +76,8 @@ DOWNLOAD_PLAN = {
 # 3. Общий прогресс-трекер по всему плану
 # ---------------------------------------------------------------------------
 
-class OverallTracker:
-    
 
+class OverallTracker:
     def __init__(self, total_bytes: int):
         self.total = total_bytes
         self.pbar = tqdm(
@@ -114,6 +113,7 @@ class OverallTracker:
 # 4. Режим "stream" — качаем весь файл потоком с обрывом по лимиту
 # ---------------------------------------------------------------------------
 
+
 def plan_stream(url: str, dest_path: str, limit_bytes: int) -> int:
     """Возвращает, сколько байт предстоит докачать"""
     already = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
@@ -132,8 +132,13 @@ def plan_stream(url: str, dest_path: str, limit_bytes: int) -> int:
     return max(planned_total - already, 0)
 
 
-def download_stream_with_limit(url: str, dest_path: str, limit_bytes: int,
-                                chunk_size: int = CHUNK_SIZE, overall: OverallTracker = None):
+def download_stream_with_limit(
+    url: str,
+    dest_path: str,
+    limit_bytes: int,
+    chunk_size: int = CHUNK_SIZE,
+    overall: OverallTracker = None,
+):
     already = 0
     mode = "wb"
     headers = {}
@@ -159,20 +164,25 @@ def download_stream_with_limit(url: str, dest_path: str, limit_bytes: int,
             r.raise_for_status()
 
             total_size_header = r.headers.get("Content-Length")
-            server_total = (already + int(total_size_header)) if total_size_header else None
+            server_total = (
+                (already + int(total_size_header)) if total_size_header else None
+            )
             bar_total = min(server_total, limit_bytes) if server_total else limit_bytes
 
             downloaded_this_run = 0
-            with open(dest_path, mode) as f, tqdm(
-                total=bar_total,
-                initial=already,
-                unit="B",
-                unit_scale=True,
-                unit_divisor=1024,
-                desc=f"  {os.path.basename(dest_path)}",
-                position=1,
-                leave=False,
-            ) as pbar:
+            with (
+                open(dest_path, mode) as f,
+                tqdm(
+                    total=bar_total,
+                    initial=already,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=f"  {os.path.basename(dest_path)}",
+                    position=1,
+                    leave=False,
+                ) as pbar,
+            ):
                 for chunk in r.iter_content(chunk_size=chunk_size):
                     if not chunk:
                         continue
@@ -204,14 +214,19 @@ def download_stream_with_limit(url: str, dest_path: str, limit_bytes: int,
 # 5. Режим "partial" — выборочная докачка файлов ВНУТРИ архива
 # ---------------------------------------------------------------------------
 
-def select_files(all_infos, extensions=None, name_glob=None, max_files=None, max_total_gb=None):
+
+def select_files(
+    all_infos, extensions=None, name_glob=None, max_files=None, max_total_gb=None
+):
     """Фильтрует записи архива и возвращает (selected_infos, total_bytes)."""
     candidates = []
     for info in all_infos:
         name = info.filename
         if name.endswith("/") or info.is_dir():
             continue
-        if extensions and not name.lower().endswith(tuple(e.lower() for e in extensions)):
+        if extensions and not name.lower().endswith(
+            tuple(e.lower() for e in extensions)
+        ):
             continue
         if name_glob and not fnmatch.fnmatch(name, name_glob):
             continue
@@ -229,8 +244,14 @@ def select_files(all_infos, extensions=None, name_glob=None, max_files=None, max
     return selected, total
 
 
-def plan_partial(url: str, dest_dir: str, extensions=None, name_glob=None,
-                  max_files=None, max_total_gb=None):
+def plan_partial(
+    url: str,
+    dest_dir: str,
+    extensions=None,
+    name_glob=None,
+    max_files=None,
+    max_total_gb=None,
+):
     """
     Читает оглавление удалённого архива и возвращает список файлов,
     которые реально нужно докачать (то есть ещё не лежат на диске
@@ -238,7 +259,9 @@ def plan_partial(url: str, dest_dir: str, extensions=None, name_glob=None,
     """
     try:
         with RemoteZip(url) as zf:
-            selected, _ = select_files(zf.infolist(), extensions, name_glob, max_files, max_total_gb)
+            selected, _ = select_files(
+                zf.infolist(), extensions, name_glob, max_files, max_total_gb
+            )
     except Exception as e:
         print(f"  [ошибка] Не удалось прочитать оглавление {url}: {e}")
         return [], 0
@@ -253,7 +276,9 @@ def plan_partial(url: str, dest_dir: str, extensions=None, name_glob=None,
     return to_download, remaining
 
 
-def download_partial_selected(url: str, dest_dir: str, selected, overall: OverallTracker = None):
+def download_partial_selected(
+    url: str, dest_dir: str, selected, overall: OverallTracker = None
+):
     """Скачивает уже отобранный список файлов"""
     if not selected:
         print("Нет файлов для скачивания")
@@ -266,15 +291,19 @@ def download_partial_selected(url: str, dest_dir: str, selected, overall: Overal
                 out_path = os.path.join(dest_dir, info.filename)
                 os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-                with zf.open(info.filename) as src, open(out_path, "wb") as dst, tqdm(
-                    total=info.file_size,
-                    unit="B",
-                    unit_scale=True,
-                    unit_divisor=1024,
-                    desc=f"  {os.path.basename(info.filename)}",
-                    position=1,
-                    leave=False,
-                ) as pbar:
+                with (
+                    zf.open(info.filename) as src,
+                    open(out_path, "wb") as dst,
+                    tqdm(
+                        total=info.file_size,
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                        desc=f"  {os.path.basename(info.filename)}",
+                        position=1,
+                        leave=False,
+                    ) as pbar,
+                ):
                     while True:
                         buf = src.read(CHUNK_SIZE)
                         if not buf:
@@ -294,13 +323,16 @@ def download_partial_selected(url: str, dest_dir: str, selected, overall: Overal
 # 6. Основной цикл: планирование + скачивание с общим прогресс-баром
 # ---------------------------------------------------------------------------
 
+
 def main():
     os.makedirs(DEST_DIR, exist_ok=True)
 
     unknown = [k for k in DOWNLOAD_PLAN if k not in URLS]
     if unknown:
-        raise ValueError(f"Неизвестные ключи в DOWNLOAD_PLAN: {unknown}. "
-                          f"Доступные ключи: {list(URLS.keys())}")
+        raise ValueError(
+            f"Неизвестные ключи в DOWNLOAD_PLAN: {unknown}. "
+            f"Доступные ключи: {list(URLS.keys())}"
+        )
 
     print(f"Папка назначения: {os.path.abspath(DEST_DIR)}")
     print(f"План скачивания: {list(DOWNLOAD_PLAN.keys())}\n")
@@ -319,20 +351,34 @@ def main():
             filename = os.path.basename(url)
             dest_path = os.path.join(DEST_DIR, filename)
             remaining = plan_stream(url, dest_path, limit_bytes)
-            plan[key] = {"mode": "stream", "url": url, "dest_path": dest_path, "limit_bytes": limit_bytes}
+            plan[key] = {
+                "mode": "stream",
+                "url": url,
+                "dest_path": dest_path,
+                "limit_bytes": limit_bytes,
+            }
             print(f"  [{key}] к скачиванию: {remaining / GB:.2f} ГБ")
 
         elif mode == "partial":
             sub_dir = os.path.join(DEST_DIR, key)
             to_download, remaining = plan_partial(
-                url, sub_dir,
+                url,
+                sub_dir,
                 extensions=cfg.get("extensions"),
                 name_glob=cfg.get("name_glob"),
                 max_files=cfg.get("max_files"),
                 max_total_gb=cfg.get("max_total_gb"),
             )
-            plan[key] = {"mode": "partial", "url": url, "dest_dir": sub_dir, "selected": to_download}
-            print(f"  [{key}] файлов к скачиванию: {len(to_download)}, объём: {remaining / GB:.2f} ГБ")
+            plan[key] = {
+                "mode": "partial",
+                "url": url,
+                "dest_dir": sub_dir,
+                "selected": to_download,
+            }
+            print(
+                f"  [{key}] файлов к скачиванию: {len(to_download)},"
+                f" объём: {remaining / GB:.2f} ГБ"
+            )
 
         else:
             print(f"  [{key}] [ошибка] неизвестный режим: {mode}")
@@ -348,9 +394,13 @@ def main():
         print(f"[{key}] {info['url']}  (режим: {info['mode']})")
 
         if info["mode"] == "stream":
-            download_stream_with_limit(info["url"], info["dest_path"], info["limit_bytes"], overall=overall)
+            download_stream_with_limit(
+                info["url"], info["dest_path"], info["limit_bytes"], overall=overall
+            )
         elif info["mode"] == "partial":
-            download_partial_selected(info["url"], info["dest_dir"], info["selected"], overall=overall)
+            download_partial_selected(
+                info["url"], info["dest_dir"], info["selected"], overall=overall
+            )
 
         print()
 
