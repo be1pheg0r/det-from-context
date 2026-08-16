@@ -10,6 +10,9 @@ from dataclasses import dataclass
 class DetectionBatch:
     images: torch.Tensor
     targets: Optional[List[Dict[str, torch.Tensor]]] = None
+    sequence_id: Optional[str] = None
+    frame_id: Optional[int] = None
+    timestamp: Optional[float] = None
 
 @dataclass
 class DetectorOutput:
