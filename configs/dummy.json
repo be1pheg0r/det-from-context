@@ -1,0 +1,8 @@
+{
+  "_base_": "_base.json",
+  "_comment": "Sanity-прогон без датасета и без RF-DETR: DoD Человека 1.",
+  "name": "dummy",
+  "data": {"name": "dummy", "root": null, "clip_len": 2, "image_size": 64},
+  "detector": {"name": "dummy", "variant": null, "freeze_backbone": false, "num_queries": 20, "dim": 32, "num_heads": 4},
+  "context": {"name": "none"}
+}
