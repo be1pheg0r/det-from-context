@@ -11,26 +11,66 @@
    выбираем файлы по расширению/маске и скачиваем
    только их, целиком и корректно
 
-
+Кеширование:
+    Оглавление удалённого zip-архива (central directory) кешируется
+    локально в JSON (./bdd100k_downloads/.cache/<hash>.json), чтобы
+    повторные запуски не тратили сетевой запрос только на то, чтобы
+    узнать список файлов внутри архива. Удалите файл кеша (или папку
+    .cache целиком), если содержимое архива на сервере изменилось.
 
 Установка зависимостей:
     pip install requests remotezip tqdm
 """
 
 import fnmatch
+import hashlib
+import json
 import os
+import time
 
 import requests
 from remotezip import RemoteZip
+from requests.adapters import HTTPAdapter
 from tqdm import tqdm
+from urllib3.util.retry import Retry
 
 GB = 1024**3
+
+# Сколько раз пытаться перекачать один файл внутри архива, если
+# соединение обрывается (IncompleteRead / ConnectionError / таймаут)
+FILE_RETRY_ATTEMPTS = 5
+FILE_RETRY_BACKOFF_SEC = 2  # 2s, 4s, 6s, 8s...
+
+
+def make_retry_session() -> requests.Session:
+    """Сессия с автоматическими повторами на уровне TCP/HTTP-соединения.
+
+    Передаётся в RemoteZip(url, session=...), чтобы обрывы соединения
+    при чтении Range-запросов (частая проблема с этим сервером)
+    переподключались сами, без падения на уровне питоновского кода.
+    """
+    session = requests.Session()
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=1.5,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=frozenset(["GET", "HEAD"]),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
 
 # ---------------------------------------------------------------------------
 # 1. Список всех доступных ссылок
 # ---------------------------------------------------------------------------
 URLS = {
-    "VIDEOS": "http://128.32.162.150/bdd100k/bdd100k_videos.zip",
+    "VIDEOS_TRAIN": "http://128.32.162.150/bdd100k/bdd100k_videos.zip",
+    "VIDEOS_TEST": "http://128.32.162.150/bdd100k/bdd100k_videos.zip",
+    "VIDEOS_VAL": "http://128.32.162.150/bdd100k/bdd100k_videos.zip",
     "INFO": "http://128.32.162.150/bdd100k/bdd100k_info.zip",
     "IMAGES_100K": "http://128.32.162.150/bdd100k/bdd100k_images_100k.zip",
     "IMAGES_10K": "http://128.32.162.150/bdd100k/bdd100k_images_10k.zip",
@@ -56,15 +96,41 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 # ---------------------------------------------------------------------------
 
 DEST_DIR = "./bdd100k_downloads"
-CHUNK_SIZE = 4 * 1024 * 1024  # для режима "stream" и построчного чтения из zip
+CHUNK_SIZE = 4 * 1024 * 1024  # для режима "stream" (обычный HTTP-докачка)
+
+# Для чтения файлов ВНУТРИ zip через remotezip чанк должен быть заметно
+# меньше: каждый read() — это отдельный Range-запрос к серверу, и чем
+# он крупнее, тем выше риск, что нестабильный сервер оборвёт соединение
+# посреди него (см. IncompleteRead). 8 КБ — дефолт самого zipfile
+# (то, что использует zf.extract()), берём чуть крупнее ради скорости,
+# но всё ещё маленький.
+ZIP_READ_CHUNK_SIZE = 256 * 1024  # 256 КБ
+
+# Папка для кеша оглавлений удалённых архивов
+CACHE_DIR = os.path.join(DEST_DIR, ".cache")
+USE_INDEX_CACHE = True  # поставьте False, чтобы всегда читать оглавление заново
 
 DOWNLOAD_PLAN = {
-    "MOT_2020_IMAGES_TEST_2": {
+    "VIDEOS_TRAIN": {
         "mode": "partial",
         "extensions": None,
-        "name_glob": None,
-        "max_files": 10,
-        "max_total_gb": 0.01,
+        "name_glob": "*train/*",
+        "max_files": None,
+        "max_total_gb": 60,
+    },
+    "VIDEOS_TEST": {
+        "mode": "partial",
+        "extensions": None,
+        "name_glob": "*test/*",
+        "max_files": None,
+        "max_total_gb": 20,
+    },
+    "VIDEOS_VAL": {
+        "mode": "partial",
+        "extensions": None,
+        "name_glob": "*val/*",
+        "max_files": None,
+        "max_total_gb": 10,
     },
     # "LABELS": {
     #     "mode": "stream",
@@ -73,7 +139,88 @@ DOWNLOAD_PLAN = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Общий прогресс-трекер по всему плану
+# 3. Кеш оглавления удалённого zip-архива
+# ---------------------------------------------------------------------------
+
+
+class CachedZipInfo:
+    """Лёгкая замена zipfile.ZipInfo для данных, восстановленных из кеша.
+
+    Хранит только то, что реально используется дальше по коду:
+    имя файла внутри архива и его несжатый размер. Этого достаточно
+    и для фильтрации (select_files), и для скачивания
+    (download_partial_selected обращается к архиву по info.filename).
+    """
+
+    __slots__ = ("filename", "file_size", "_is_dir")
+
+    def __init__(self, filename: str, file_size: int, is_dir: bool):
+        self.filename = filename
+        self.file_size = file_size
+        self._is_dir = is_dir
+
+    def is_dir(self) -> bool:
+        return self._is_dir
+
+
+def _cache_path_for_url(url: str) -> str:
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(CACHE_DIR, f"{h}.json")
+
+
+def load_cached_index(url: str):
+    """Возвращает список CachedZipInfo из кеша или None, если кеша нет."""
+    path = _cache_path_for_url(url)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return [
+            CachedZipInfo(item["filename"], item["file_size"], item["is_dir"])
+            for item in data.get("files", [])
+        ]
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+
+
+def save_cached_index(url: str, infolist) -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    path = _cache_path_for_url(url)
+    payload = {
+        "url": url,
+        "files": [
+            {
+                "filename": info.filename,
+                "file_size": info.file_size,
+                "is_dir": info.is_dir(),
+            }
+            for info in infolist
+        ],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+
+def get_remote_index(url: str, use_cache: bool = USE_INDEX_CACHE):
+    """Отдаёт оглавление архива: из кеша, если он есть, иначе по сети
+    (и сразу сохраняет в кеш)."""
+    if use_cache:
+        cached = load_cached_index(url)
+        if cached is not None:
+            return cached
+
+    with RemoteZip(url, session=make_retry_session()) as zf:
+        infolist = zf.infolist()
+
+    if use_cache:
+        save_cached_index(url, infolist)
+
+    return infolist
+
+
+# ---------------------------------------------------------------------------
+# 4. Общий прогресс-трекер по всему плану
 # ---------------------------------------------------------------------------
 
 
@@ -110,7 +257,7 @@ class OverallTracker:
 
 
 # ---------------------------------------------------------------------------
-# 4. Режим "stream" — качаем весь файл потоком с обрывом по лимиту
+# 5. Режим "stream" — качаем весь файл потоком с обрывом по лимиту
 # ---------------------------------------------------------------------------
 
 
@@ -211,7 +358,7 @@ def download_stream_with_limit(
 
 
 # ---------------------------------------------------------------------------
-# 5. Режим "partial" — выборочная докачка файлов ВНУТРИ архива
+# 6. Режим "partial" — выборочная докачка файлов ВНУТРИ архива
 # ---------------------------------------------------------------------------
 
 
@@ -253,18 +400,19 @@ def plan_partial(
     max_total_gb=None,
 ):
     """
-    Читает оглавление удалённого архива и возвращает список файлов,
-    которые реально нужно докачать (то есть ещё не лежат на диске
-    в правильном размере), и сумму их байт.
+    Читает оглавление удалённого архива (из кеша, если он есть) и
+    возвращает список файлов, которые реально нужно докачать (то есть
+    ещё не лежат на диске в правильном размере), и сумму их байт.
     """
     try:
-        with RemoteZip(url) as zf:
-            selected, _ = select_files(
-                zf.infolist(), extensions, name_glob, max_files, max_total_gb
-            )
+        all_infos = get_remote_index(url)
     except Exception as e:
         print(f"  [ошибка] Не удалось прочитать оглавление {url}: {e}")
         return [], 0
+
+    selected, _ = select_files(
+        all_infos, extensions, name_glob, max_files, max_total_gb
+    )
 
     to_download, remaining = [], 0
     for info in selected:
@@ -276,51 +424,110 @@ def plan_partial(
     return to_download, remaining
 
 
+def _download_one_file(zf, info, out_path: str, overall: OverallTracker = None) -> bool:
+    """Скачивает один файл из уже открытого RemoteZip с повторами при
+    обрыве соединения. При неудачной попытке частично записанный файл
+    отбрасывается (сжатые файлы в zip нельзя докачать 'с середины')
+    и запись начинается заново со следующей попытки.
+    Возвращает True при успехе, False если все попытки исчерпаны.
+    """
+    for attempt in range(1, FILE_RETRY_ATTEMPTS + 1):
+        bytes_written_this_attempt = 0
+        try:
+            with (
+                zf.open(info.filename) as src,
+                open(out_path, "wb") as dst,
+                tqdm(
+                    total=info.file_size,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=f"  {os.path.basename(info.filename)}",
+                    position=1,
+                    leave=False,
+                ) as pbar,
+            ):
+                while True:
+                    buf = src.read(ZIP_READ_CHUNK_SIZE)
+                    if not buf:
+                        break
+                    dst.write(buf)
+                    pbar.update(len(buf))
+                    bytes_written_this_attempt += len(buf)
+                    if overall:
+                        overall.update(len(buf))
+
+            if os.path.getsize(out_path) == info.file_size:
+                return True
+
+            tqdm.write(
+                f"  [{info.filename}] размер не совпал после скачивания "
+                f"({os.path.getsize(out_path)} != {info.file_size}), повтор..."
+            )
+
+        except Exception as e:
+            # ловим в т.ч. IncompleteRead/ConnectionError/таймауты
+            tqdm.write(
+                f"  [{info.filename}] попытка {attempt}/{FILE_RETRY_ATTEMPTS} "
+                f"прервана: {e}"
+            )
+            # откатываем уже засчитанный в общий прогресс кусок,
+            # т.к. файл будет перекачан заново
+            if overall and bytes_written_this_attempt:
+                overall.update(-bytes_written_this_attempt)
+
+        if os.path.exists(out_path):
+            os.remove(out_path)
+
+        if attempt < FILE_RETRY_ATTEMPTS:
+            time.sleep(FILE_RETRY_BACKOFF_SEC * attempt)
+
+    return False
+
+
 def download_partial_selected(
     url: str, dest_dir: str, selected, overall: OverallTracker = None
 ):
-    """Скачивает уже отобранный список файлов"""
+    """Скачивает уже отобранный список файлов. Обрыв соединения на одном
+    файле не прерывает скачивание остальных — файл перекачивается
+    заново (до FILE_RETRY_ATTEMPTS раз), затем скрипт идёт дальше."""
     if not selected:
         print("Нет файлов для скачивания")
         return
 
     os.makedirs(dest_dir, exist_ok=True)
+    failed = []
+
     try:
-        with RemoteZip(url) as zf:
+        with RemoteZip(url, session=make_retry_session()) as zf:
             for info in selected:
                 out_path = os.path.join(dest_dir, info.filename)
                 os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-                with (
-                    zf.open(info.filename) as src,
-                    open(out_path, "wb") as dst,
-                    tqdm(
-                        total=info.file_size,
-                        unit="B",
-                        unit_scale=True,
-                        unit_divisor=1024,
-                        desc=f"  {os.path.basename(info.filename)}",
-                        position=1,
-                        leave=False,
-                    ) as pbar,
-                ):
-                    while True:
-                        buf = src.read(CHUNK_SIZE)
-                        if not buf:
-                            break
-                        dst.write(buf)
-                        pbar.update(len(buf))
-                        if overall:
-                            overall.update(len(buf))
-
-        print(f"  Готово. Файлы сохранены в: {os.path.abspath(dest_dir)}")
+                ok = _download_one_file(zf, info, out_path, overall=overall)
+                if not ok:
+                    failed.append(info.filename)
+                    tqdm.write(
+                        f"  [{info.filename}] не удалось скачать за "
+                        f"{FILE_RETRY_ATTEMPTS} попыток, пропускаю"
+                    )
 
     except Exception as e:
         print(f"  [ошибка] Не удалось обработать архив: {e}")
+        return
+
+    if failed:
+        print(
+            f"  Готово с ошибками. Не скачано файлов: {len(failed)} "
+            f"из {len(selected)}. Запустите скрипт повторно — "
+            f"недокачанные файлы попробуются снова."
+        )
+    else:
+        print(f"  Готово. Файлы сохранены в: {os.path.abspath(dest_dir)}")
 
 
 # ---------------------------------------------------------------------------
-# 6. Основной цикл: планирование + скачивание с общим прогресс-баром
+# 7. Основной цикл: планирование + скачивание с общим прогресс-баром
 # ---------------------------------------------------------------------------
 
 
