@@ -72,6 +72,14 @@ class ContextConfig(_Section):
     name: ContextName = "none"
     fusion: FusionMode = "residual"
     num_slots: int = Field(64, ge=0)
+    memory_length: int = Field(24, gt=0)
+    short_memory_length: int = Field(3, gt=0)
+    write_threshold: float = Field(0.5, ge=0.0, le=1.0)
+    max_missed: int = Field(24, ge=0)
+    association_iou_threshold: float = Field(0.1, ge=0.0, le=1.0)
+    association_cosine_threshold: float = Field(0.5, ge=-1.0, le=1.0)
+    association_appearance_weight: float = Field(0.25, ge=0.0)
+    motion_momentum: float = Field(0.8, ge=0.0, lt=1.0)
     write_gate: bool = False
     motion: str | None = None
     horizon: int = Field(0, ge=0)
@@ -82,6 +90,8 @@ class ContextConfig(_Section):
             return self
         if not self.num_slots and self.name != "cross_attn":
             raise ValueError(f"ветке {self.name!r} нужен num_slots > 0")
+        if self.name == "memot" and self.short_memory_length > self.memory_length:
+            raise ValueError("memot требует short_memory_length <= memory_length")
         if self.name == "bridge_ad" and not self.horizon:
             raise ValueError("bridge_ad адресуется по горизонту — нужен horizon > 0")
         return self

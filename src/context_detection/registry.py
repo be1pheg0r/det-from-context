@@ -11,7 +11,9 @@ from typing import Any, Literal, get_args
 
 DatasetName = Literal["imagenet_vid", "ovis", "dummy"]
 DetectorName = Literal["rfdetr", "dummy"]
-ContextName = Literal["none", "ema_slot", "cross_attn", "stream_queue", "bridge_ad"]
+ContextName = Literal[
+    "none", "memot", "ema_slot", "cross_attn", "stream_queue", "bridge_ad"
+]
 FusionMode = Literal["residual", "gated_residual", "concat_proj"]
 ContextStrategy = Literal["prev_k", "uniform", "random", "empty", "shuffled"]
 AttachPoint = Literal[

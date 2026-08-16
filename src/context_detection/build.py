@@ -14,6 +14,7 @@ from .models.memory import (
     ContextCrossAttention,
     ContextModule,
     EMASlot,
+    MeMOTMemory,
     NoContext,
     StreamQueue,
 )
@@ -31,6 +32,7 @@ __all__ = [
 
 _CONTEXT_MODULES: dict[str, type[ContextModule]] = {
     "none": NoContext,
+    "memot": MeMOTMemory,
     "ema_slot": EMASlot,
     "cross_attn": ContextCrossAttention,
     "stream_queue": StreamQueue,
@@ -69,8 +71,23 @@ def build_context_module(cfg: ExperimentConfig) -> ContextModule:
             f"ветка контекста {name!r} ещё не реализована (Человек 4): "
             f"{cls.__name__} не переопределяет read/write"
         )
-    # TODO(чел.4): у веток появятся собственные аргументы (num_slots, write_gate,
-    # motion, horizon) — прокидывать отсюда, конфиг их уже несёт и валидирует.
+    if cls is MeMOTMemory:
+        return cls(
+            dim=cfg.detector.dim,
+            num_heads=cfg.detector.num_heads,
+            num_slots=cfg.context.num_slots,
+            memory_length=cfg.context.memory_length,
+            short_memory_length=cfg.context.short_memory_length,
+            write_threshold=cfg.context.write_threshold,
+            max_missed=cfg.context.max_missed,
+            association_iou_threshold=cfg.context.association_iou_threshold,
+            association_cosine_threshold=cfg.context.association_cosine_threshold,
+            association_appearance_weight=cfg.context.association_appearance_weight,
+            motion_momentum=cfg.context.motion_momentum,
+        )
+    # TODO(чел.4): у остальных веток появятся собственные аргументы
+    # (num_slots, write_gate, motion, horizon) — прокидывать отсюда, конфиг их
+    # уже несёт и валидирует.
     return cls()
 
 
