@@ -4,27 +4,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel
-from dataclasses import dataclass
 
-@dataclass
-class DetectionBatch:
-    images: torch.Tensor
-    targets: Optional[List[Dict[str, torch.Tensor]]] = None
-    sequence_id: Optional[str] = None
-    frame_id: Optional[int] = None
-    timestamp: Optional[float] = None
-
-@dataclass
-class DetectorOutput:
-    logits: torch.Tensor 
-    boxes: torch.Tensor   
-    queries: Optional[torch.Tensor] = None
-    reference_points: Optional[torch.Tensor] = None
-    features: Optional[List[torch.Tensor]] = None
-    decoder_layers: Optional[List[Dict[str, torch.Tensor]]] = None
+from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
+from .detector import DetectorAdapter
 
 class SinePositionEmbedding2D(nn.Module):
-    # Синусное/косинусное позиционное кодирование
     def __init__(self, num_pos_feats: int, temperature: int = 10000):
         super().__init__()
         self.num_pos_feats = num_pos_feats // 2
@@ -45,7 +29,6 @@ class SinePositionEmbedding2D(nn.Module):
         return pos.flatten(1, 2)
 
 class MultiScaleProjector(nn.Module):
-    # Преобразует фичи backbone в несколько масштабов
     def __init__(self, in_dim: int, hidden_dim: int, n_levels: int = 3):
         super().__init__()
         self.input_proj = nn.Sequential(nn.Conv2d(in_dim, hidden_dim, 1), nn.GroupNorm(32, hidden_dim))
@@ -61,7 +44,6 @@ class MultiScaleProjector(nn.Module):
         return feats
 
 class DINOv3Backbone(nn.Module):
-    # Обёртка над HF DINOv3
     def __init__(self, hf_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m", freeze: bool = False):
         super().__init__()
         self.model = AutoModel.from_pretrained(hf_name)
@@ -76,9 +58,7 @@ class DINOv3Backbone(nn.Module):
         tokens = self.model(pixel_values=images).last_hidden_state
         return tokens[:, self.num_special_tokens:, :].transpose(1, 2).reshape(B, self.embed_dim, h, w)
 
-#  Внимание и декодер
 class MSDeformAttn(nn.Module):
-    # Multi-scale deformable внимание через grid_sample
     def __init__(self, d_model=256, n_levels=3, n_heads=8, n_points=4):
         super().__init__()
         self.n_levels, self.n_heads, self.n_points = n_levels, n_heads, n_points
@@ -128,7 +108,6 @@ class DeformableDecoderLayer(nn.Module):
         return self.norm3(tgt + self.dropout(self.ffn(tgt)))
 
 class DeformableDecoder(nn.Module):
-    # Iterative box refinement
     def __init__(self, d_model=256, num_layers=6, num_classes=10):
         super().__init__()
         self.layers = nn.ModuleList([DeformableDecoderLayer(d_model) for _ in range(num_layers)])
@@ -147,12 +126,11 @@ class DeformableDecoder(nn.Module):
             ref = box[..., :2].detach()
         return torch.stack(out_logits), torch.stack(out_boxes)
     
-class RFDetrBaseline(nn.Module):
-    def __init__(self, config: Dict[str, Any] | None = None):
+class RFDetrAdapter(DetectorAdapter):
+    def __init__(self, variant: str = "base", weights: Optional[str] = None):
         super().__init__()
-        cfg = config or {}
-        self.hidden_dim, self.num_classes, self.num_queries, self.n_levels = 256, cfg.get("num_classes", 10), 300, 3
-        self.backbone = DINOv3Backbone(freeze=cfg.get("freeze_backbone", False))
+        self.hidden_dim, self.num_classes, self.num_queries, self.n_levels = 256, 10, 300, 3
+        self.backbone = DINOv3Backbone(freeze=False)
         self.projector = MultiScaleProjector(self.backbone.embed_dim, self.hidden_dim)
         self.pos_embed = SinePositionEmbedding2D(self.hidden_dim)
         self.level_embed = nn.Parameter(torch.randn(self.n_levels, self.hidden_dim) * 0.02)
@@ -162,6 +140,7 @@ class RFDetrBaseline(nn.Module):
         self.enc_bbox_head = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim), nn.ReLU(inplace=True), nn.Linear(self.hidden_dim, 4))
         self.query_pos_mlp = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim), nn.ReLU(inplace=True), nn.Linear(self.hidden_dim, self.hidden_dim))
 
+    # --- заглушки для CI ---
     @property
     def dim(self) -> int:
         return self.hidden_dim
@@ -170,11 +149,12 @@ class RFDetrBaseline(nn.Module):
         b = batch.images.shape[0] if batch.images is not None else 1
         return torch.zeros(b, self.num_queries, self.hidden_dim, device=batch.images.device)
 
-    def encode_context_frames(self, context: Any) -> Optional[List[torch.Tensor]]:
+    def encode_context_frames(self, context: ContextBatch) -> Optional[List[torch.Tensor]]:
         return None
 
     def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
         pass
+    # -----------------------------------
 
     def _flatten_levels(self, feats):
         srcs, poss, shapes = [], [], []
@@ -184,9 +164,8 @@ class RFDetrBaseline(nn.Module):
             poss.append(self.pos_embed(f) + self.level_embed[lvl].view(1, 1, -1))
         return torch.cat(srcs, dim=1), torch.cat(poss, dim=1), shapes
 
-    def forward(self, batch: DetectionBatch, context: Optional[Any] = None, query_init: Optional[torch.Tensor] = None) -> DetectorOutput:
+    def forward(self, batch: DetectionBatch, query_init: Optional[torch.Tensor] = None) -> DetectorOutput:
         feats = self.projector(self.backbone(batch.images))
-        # Здесь будет добавляться временной контекст 
         memory, pos_flat, shapes = self._flatten_levels(feats)
         B = memory.shape[0]
         enc = self.enc_output_norm(self.enc_output(memory + pos_flat))
@@ -203,11 +182,16 @@ class RFDetrBaseline(nn.Module):
         idx_c = idx.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
         
         tgt, ref_points = torch.gather(enc, 1, idx_c).detach(), torch.gather(enc_boxes, 1, idx.unsqueeze(-1).expand(-1, -1, 4))[..., :2].detach()
+        
+        if query_init is not None:
+            tgt = tgt + query_init
+            
         logits, boxes = self.decoder(tgt, self.query_pos_mlp(torch.gather(pos_flat, 1, idx_c)), ref_points, memory, shapes)
         
+        # Индекс [-1] возвращает результат последнего слоя (избавляемся от 4D тензора)
         return DetectorOutput(
-            logits=logits, 
-            boxes=boxes,
+            logits=logits[-1], 
+            boxes=boxes[-1],
             queries=tgt,
             reference_points=ref_points,
             features=feats,
