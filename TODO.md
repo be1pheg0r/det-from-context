@@ -64,27 +64,75 @@ Settings → Rules → New branch ruleset → require status checks `lint` и `t
 четверо могут начать не дожидаясь друг друга.
 
 - [x] Package layout, `src/`-layout, `pyproject.toml`
-- [x] `contracts.py` — `DetectionBatch`, `ContextBatch`, `DetectorOutput`,
-      `ContextOutput`, `MemoryState`
-- [ ] Протоколы `DetectorAdapter`, `ContextModule` (`models/detector.py`,
-      `models/memory.py`) — согласовать сигнатуры с 3 и 4 **до** их старта
-- [ ] `wrapper.py` — `ContextDetector`, склейка детектора и context-модуля,
-      fusion-режимы (residual / gated / concat+proj) как параметр, не как класс
-- [ ] `build.py` — фабрики из конфига, слияние по ключу `_base_`
-- [ ] `configs/` — `baseline`, `context_none`, `context_cross_attn`,
-      `memory_ema`, `memory_stream`
-- [ ] Dummy-детектор и dummy-батч на случайных тензорах
-- [ ] Документ про размерности, device/dtype, соглашение о формате боксов
-      (внутри модели — cxcywh нормализованные; COCO только на границе)
+- [x] `contracts.py` — Pydantic-модели `DetectionBatch`, `ContextBatch`,
+      `DetectorOutput`, `ContextOutput`, `MemoryState` с валидаторами
+- [x] `MemoryState.empty / detach / reset`
+- [x] ABC `DetectorAdapter`, `ContextModule` — оба `nn.Module`
+- [x] `wrapper.py` — `ContextDetector` + `Fusion` (residual / gated / concat)
+- [x] `config.py` — Pydantic-конфиги, `_base_`, override'ы `a.b=value`
+- [x] `build.py` — фабрики, `make_dummy_batch`
+- [x] `configs/` — 6 файлов, по одному на ветку + `dummy`
+- [x] `DummyDetector` — настоящий обучаемый мини-DETR, не случайные числа
+- [x] Соглашения по размерностям, device/dtype и формату боксов — в докстринге
+      `contracts.py` (отдельный документ разъедется с кодом на второй неделе)
+- [ ] Callback для attach между слоями decoder — согласовать с Человеком 3,
+      когда он дойдёт до `decoder_layer`
 
-**DoD:**
+**DoD — выполнено:**
 ```python
-model = build_model(cfg)
-output = model(*make_dummy_batch())  # без датасета и без RF-DETR
+model = build_model(load_config("configs/dummy.json"))
+output, state = model(*make_dummy_batch())  # без датасета и без RF-DETR
 ```
 
-⚠️ Это блокирующая задача. Пока контракты не заморожены, остальные пишут
-против заглушек.
+Проверяется тестами `tests/test_contracts.py`: сквозной прогон, backward до
+всех параметров, шаг оптимизатора, эквивалентность `NoContext` голому
+детектору.
+
+### Что зафиксировано в контрактах (читать перед стартом)
+
+- **Порядок на кадре**: reset → encode → read → fusion → forward → write →
+  detach. Живёт в `ContextDetector.forward`, менять только через Человека 1.
+- **`initial_queries` вынесен из forward** — иначе memory-модуль не может
+  прочитать память ДО декодирования, не форкая код детектора.
+- **read / write разделены** — гейт записи (TSA) существует, только если write
+  может решить не писать.
+- **`query_delta=None`, а не нули** — `NoContext` обязан быть побитово равен
+  детектору без обёртки, иначе baseline для всех ΔAP не является baseline.
+  Поле **без дефолта**: `None` — осмысленный ответ, и ветка обязана произнести
+  его явно. Забытое поле с дефолтом тихо выродило бы прогон в baseline с ΔAP=0,
+  что читается как «память не помогает» вместо «память не подключена».
+- **`make_dummy_batch` неоднороден намеренно**: элемент 0 — начало сцены
+  (`is_sequence_start=True`, истории нет), элемент 1 — частичная история,
+  остальные — полная. Однородный батч не заходит в `reset` ни разу, и утечка
+  памяти между сценами не ловится ни одним прогоном.
+- **`gated_residual` стартует с bias −2** — память открывается, только если
+  реально помогает. Иначе первые эпохи она подмешивает шум в необученные
+  queries, и это выглядит как «память не работает».
+- **Валидаторы ловят на границе**: боксы вне [0,1], `time_offset ≤ 0` в
+  валидном слоте (утечка будущего), ненулевые offsets в слотах-заглушках,
+  рассинхрон B и device, NaN в `query_delta`, отрицательный age.
+
+### Открытые вопросы (решить до старта, а не по ходу)
+
+- **Двойной прогон backbone у RF-DETR (Человек 3 + Человек 1).**
+  `ContextDetector.forward` зовёт `initial_queries(batch)`, затем
+  `detector(batch, query_init=...)`. У `DummyDetector` первое — бесплатный
+  `nn.Embedding`, и это маскирует проблему. У RF-DETR queries выбираются из
+  выхода энкодера (two-stage), значит backbone прогонится дважды: ~2×
+  латентность на модели, чей аргумент — неглубокий decoder. Варианты: кэш
+  фич внутри адаптера или callback вместо отдельного метода. Не начинать
+  `RFDetrAdapter`, не выбрав.
+- **Форма `encoded_context` (Человек 3 + Человек 4).**
+  `encode_context_frames` у `DummyDetector` отдаёт `[B, K, C_i, H_i, W_i]`, а
+  `DetectorOutput.features` — `[B, C_i, H_i, W_i]`. Это единственный вход в
+  `ContextModule.read`, который не является провалидированным контрактом.
+  Зафиксировать раскладку до того, как `ContextCrossAttention` будет написан
+  против угаданной.
+- **Стоимость валидации на GPU (Человек 5, после первого профиля).**
+  Валидаторы делают ~B+4 переноса на хост за шаг; на CUDA каждый — это
+  синхронизация. Точка апгрейда названа в докстринге `contracts.py`:
+  `model_construct` на горячем пути engine, валидация остаётся в тестах и на
+  границах датасета.
 
 ---
 

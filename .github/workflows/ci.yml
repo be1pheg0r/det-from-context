@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [master]
   pull_request:
 
 concurrency:
@@ -37,9 +36,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      # Тесты не импортируют torch — проверяют контракты, конфиги и логику
-      # индексации. Поэтому ставится только pytest, а не зависимости проекта.
-      # Если тест понадобилось сделать torch-зависимым — скорее всего он проверяет
-      # не то: тяжёлое место ему в отдельном ручном прогоне, не в CI.
-      - run: pip install pytest
+      # Быстрая линия: конфиги и реестр имён проверяются без torch за секунды.
+      - run: pip install pytest pydantic
+      - run: pytest -q tests/test_configs.py
+
+      # Контракты стали Pydantic поверх Tensor, поэтому проверить их без torch
+      # нельзя. CPU-колёса: GPU не нужен, обычный индекс тянет ~2.5 ГБ CUDA.
+      # Именно --index-url, а не --extra-index-url: второй не заменяет PyPI, а
+      # добавляется к нему, и pip всё равно резолвит CUDA-сборку по версии.
+      - run: pip install --index-url https://download.pytorch.org/whl/cpu torch
       - run: pytest -q
