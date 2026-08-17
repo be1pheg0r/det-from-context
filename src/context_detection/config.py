@@ -48,6 +48,7 @@ class LogLevel(StrEnum):
 
 class DataConfig(_Section):
     name: str = "dummy"
+    component_path: str | None = None
     config_path: str = Field("dataset_configs/dummy.yaml", min_length=1)
     root: str | None = None
     context_k: int = Field(4, ge=0)
@@ -58,7 +59,7 @@ class DataConfig(_Section):
 
     @model_validator(mode="after")
     def _check(self) -> DataConfig:
-        if self.name not in DATASETS:
+        if self.name not in DATASETS and self.component_path is None:
             raise ValueError(
                 f"неизвестный датасет {self.name!r}, доступно: {sorted(DATASETS)}"
             )
@@ -74,6 +75,8 @@ class DataConfig(_Section):
 
 class DetectorConfig(_Section):
     name: str = "dummy"
+    component_path: str | None = None
+    config_path: str | None = None
     variant: str | None = None
     weights: str | None = None
     freeze_backbone: bool = False
@@ -86,7 +89,7 @@ class DetectorConfig(_Section):
 
     @model_validator(mode="after")
     def _check(self) -> DetectorConfig:
-        if self.name not in DETECTORS:
+        if self.name not in DETECTORS and self.component_path is None:
             raise ValueError(
                 f"неизвестная модель {self.name!r}, доступно: {sorted(DETECTORS)}"
             )

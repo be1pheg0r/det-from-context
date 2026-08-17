@@ -1,111 +1,124 @@
 # Протоколы датасетов и моделей
 
-Компоненты расширяются через структурные Python-протоколы и runtime-реестры.
-Наследование от проектного базового класса не требуется. При этом внешние
-границы фиксированы:
+Основная единица расширения — self-contained component directory. Датасет и
+модель живут каждый в своей папке, как отдельный эксперимент: рядом находятся
+код provider, его конфиг и принадлежащие компоненту артефакты.
 
-- dataset protocol всегда возвращает `torch.utils.data.DataLoader`;
-- model protocol всегда возвращает `torch.nn.Module`;
-- experiment protocol создаёт запуск до сборки компонентов и принимает worker,
-  который использует эти стандартные PyTorch endpoints.
+```text
+datasets/<dataset_name>/
+├── provider.py
+├── config.yaml
+└── artifacts/
 
-Существующие `build_dataset`, `build_model` и `build_detector` сохранены.
-Встроенные имена `dummy`, `imagenet_vid`, `ovis` и `rfdetr` проходят через те же
-реестры, поэтому отдельного legacy-пути нет.
-
-## Dataset protocol
-
-Минимальный provider реализует один метод:
-
-```python
-from torch.utils.data import DataLoader
-
-from context_detection import DatasetSplit, register_dataset_protocol
-
-
-class MyDataset:
-    def build(self, config, split: DatasetSplit) -> DataLoader:
-        dataset = create_dataset(config, split)
-        return DataLoader(dataset, batch_size=config.train.batch_size)
-
-
-register_dataset_protocol("my_dataset", MyDataset())
+models/<model_name>/
+├── provider.py
+├── config.yaml
+└── artifacts/
 ```
 
-Регистрация должна произойти до загрузки Hydra/Pydantic-конфига. После неё
-`data.name: my_dataset` считается валидным. Пользовательский provider может
-работать без `data.root`; root обязателен только для встроенных
-`imagenet_vid` и `ovis`.
+`ComponentDirectory` проверяет layout до запуска обучения. `config.yaml` обязан
+содержать строковый `name`, совпадающий с именем в experiment config;
+`provider.py` обязан экспортировать объект `PROTOCOL`. Отсутствующий файл,
+папка artifacts, несовпадающее имя или несовместимый provider завершают запуск
+сразу и с указанием конкретного component path.
 
-`DatasetSplit` принимает `train`, `validation`, `test`; алиас `val`
-нормализуется в `validation`. Реестр проверяет итоговый объект и сразу выдаёт
-понятную ошибку, если provider вернул не `DataLoader`.
+## Experiment config
 
-Для detection pipeline доступен `DetectionCollator`. Он собирает sample-словари
-в существующие `DetectionBatch` и `ContextBatch`, дополняет разное число
-контекстных слотов невалидными значениями и сохраняет extras. Изображения разных
-размеров требуют пользовательского collator с resize/padding.
+Directory-backed components подключаются декларативно:
 
-## Model protocol
+```yaml
+data:
+  name: synthetic_regression
+  component_path: datasets/synthetic_regression
+  config_path: datasets/synthetic_regression/config.yaml
 
-Минимальный provider также структурный:
+detector:
+  name: linear_regression
+  component_path: models/linear_regression
+  config_path: models/linear_regression/config.yaml
+```
+
+Пути разрешаются относительно project root. Во время запуска experiment
+protocol подставляет абсолютные проверенные пути в runtime-копию конфига,
+динамически регистрирует оба provider и сохраняет их код/конфиги в source
+snapshot. Исходный portable YAML при этом остаётся относительным.
+
+## Dataset endpoint
+
+Dataset provider структурно реализует:
 
 ```python
-from torch import nn
+class MyDatasetProtocol:
+    def build(self, config, split) -> DataLoader:
+        ...
 
-from context_detection import register_model_protocol
 
+PROTOCOL = MyDatasetProtocol()
+```
 
-class MyModel:
+Реализация свободна выбирать `Dataset`, sampler и collator, но конечный объект
+всегда проверяется как `torch.utils.data.DataLoader`. Для detection datasets
+доступен `DetectionCollator`, создающий существующие `DetectionBatch` и
+`ContextBatch` и дополняющий переменное число context slots.
+
+## Model endpoint
+
+Model provider структурно реализует:
+
+```python
+class MyModelProtocol:
     def build(self, config) -> nn.Module:
-        return nn.Linear(config.detector.dim, config.detector.num_classes)
+        ...
 
 
-register_model_protocol("my_model", MyModel())
+PROTOCOL = MyModelProtocol()
 ```
 
-После регистрации имя разрешено в `detector.name`. Реестр гарантирует только
-универсальную границу `nn.Module`; конкретная сигнатура `forward` определяется
-pipeline. Для совместимости со старым `build_detector` provider дополнительно
-реализует `build_detector(config) -> DetectorAdapter`. Встроенные `dummy` и
-`rfdetr` реализуют оба endpoint и собирают прежний `ContextDetector` без
-изменения его `forward(batch, context, state)`.
+Конечный объект всегда проверяется как `torch.nn.Module`. Detection provider
+может дополнительно реализовать `build_detector(config) -> DetectorAdapter`,
+что сохраняет совместимость старого `build_detector`. Встроенные `dummy` и
+`rfdetr` продолжают работать без component directory через тот же registry.
 
-## Совместимость с experiment protocol и ClearML
+## Experiment endpoint и ClearML
 
-Компоненты следует строить внутри worker, потому что `ExperimentProtocol`
-сначала создаёт ClearML Task, подключает resolved config и только затем вызывает
-worker:
+Для directory components используется `execute_components`:
 
 ```python
-from context_detection.build import build_dataset, build_model
-from context_detection.experiment import ExperimentProtocol
-
-
-def train(run, config):
-    loader = build_dataset(config, "train")
-    model = build_model(config)
-    # optimizer / train loop
-    run.log_metrics({"loss": 0.1}, step=0, split="train")
-    run.save_artifact("model", checkpoint_path)
+def train(run, config, components):
+    train_loader = components.loader("train")
+    model = components.model
+    model_artifacts = components.artifacts("model")
+    # train loop; checkpoint сохраняется в model_artifacts
+    run.log_metrics({"loss": 0.1}, step=1, split="train")
     return {"status": "ok"}
 
 
-ExperimentProtocol().execute("configs/experiment.yaml", train)
+ExperimentProtocol().execute_components("experiment.yaml", train)
 ```
 
-Так ClearML автоматически видит создаваемые PyTorch-модели, а метрики,
-артефакты, resolved config и итоговый status проходят через единый API
-`ExperimentRun`. При `clearml.enabled: false` тот же код полностью сохраняет
-локальный результат, поэтому pipeline не ветвится по backend логирования.
+Порядок гарантирован: component layout и provider проверяются до запуска,
+затем создаётся tracking backend/ClearML Task, а `DataLoader` и `nn.Module`
+строятся уже после него. По завершении protocol копирует runtime-файлы из
+component `artifacts/` в изолированную run directory и загружает их в ClearML.
+В `metadata.json` сохраняются component paths, endpoint types, artifact names,
+ClearML task id и dashboard URL. Секреты из `.env` туда не попадают.
 
-## Гарантии и ограничения
+## Regression reference
 
-- Дубликат имени запрещён, если явно не передан `replace=True`.
-- Неизвестное имя отклоняется при валидации конфига.
-- Неверный конечный тип отклоняется при сборке компонента.
-- Реестры не навязывают тип исходного Dataset, sampler, архитектуру модели или
-  training loop.
-- `imagenet_vid` и `ovis` подключены к protocol endpoint, но их прежние
-  незавершённые index builders остаются честными `NotImplementedError` до
-  реализации чтения конкретного формата данных.
+Рабочий пример состоит из трёх независимых папок:
+
+- `datasets/synthetic_regression` — генератор, dataset config и tensor artifacts;
+- `models/linear_regression` — `nn.Linear`, model config и checkpoint artifacts;
+- `experiments/regression_synthetic` — train loop и experiment config.
+
+Dataset provider создаёт `train.pt` и `validation.pt`; worker сохраняет
+`model.pt` в папку модели. Experiment protocol публикует все три файла локально
+и в ClearML. Это сквозная проверка совместимости всех трёх протоколов.
+
+## Совместимость и прямой registry API
+
+Существующие `build_dataset`, `build_model`, `build_detector` и старый
+двухаргументный `ExperimentProtocol.execute` не изменили контракт. Для
+встроенных или создаваемых в Python компонентов остаются доступны
+`register_dataset_protocol` и `register_model_protocol`; folder layout является
+стандартным способом оформить самостоятельный воспроизводимый компонент.

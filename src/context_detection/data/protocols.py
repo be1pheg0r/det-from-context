@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
+from pathlib import Path
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import torch
@@ -299,4 +300,17 @@ def build_dataloader(
     split: str | DatasetSplit,
 ) -> DataLoader[Any]:
     """Построить DataLoader через зарегистрированный protocol."""
-    return DATASET_PROTOCOLS.build(config, split)
+    runtime_config: ExperimentConfig = config
+    if config.data.component_path is not None:
+        from ..components import ComponentDirectory, ComponentKind
+
+        component: ComponentDirectory = ComponentDirectory.load(
+            config.data.component_path,
+            project_root=Path.cwd(),
+            kind=ComponentKind.DATASET,
+            expected_name=config.data.name,
+        )
+        runtime_config = config.model_copy(deep=True)
+        runtime_config.data.component_path = str(component.root)
+        runtime_config.data.config_path = str(component.config_path)
+    return DATASET_PROTOCOLS.build(runtime_config, split)

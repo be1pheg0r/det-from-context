@@ -1,6 +1,12 @@
 """Детекция с переиспользованием временного контекста."""
 
-from .experiment import ExperimentProtocol, ExperimentRun, RunStatus
+from .components import ComponentDirectory, ComponentKind
+from .experiment import (
+    ExperimentComponents,
+    ExperimentProtocol,
+    ExperimentRun,
+    RunStatus,
+)
 from .protocols import (
     DatasetProtocol,
     DatasetSplit,
@@ -14,6 +20,9 @@ from .protocols import (
 __all__ = [
     "DatasetProtocol",
     "DatasetSplit",
+    "ComponentDirectory",
+    "ComponentKind",
+    "ExperimentComponents",
     "ExperimentProtocol",
     "ExperimentRun",
     "ModelProtocol",

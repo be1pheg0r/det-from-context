@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from torch import nn
@@ -213,9 +214,26 @@ def register_model_protocol(
 
 def build_registered_model(config: ExperimentConfig) -> nn.Module:
     """Построить nn.Module через зарегистрированный protocol."""
-    return MODEL_PROTOCOLS.build(config)
+    return MODEL_PROTOCOLS.build(_prepare_directory_model_config(config))
 
 
 def build_registered_detector(config: ExperimentConfig) -> DetectorAdapter:
     """Построить DetectorAdapter через совместимый встроенный protocol."""
-    return MODEL_PROTOCOLS.build_detector(config)
+    return MODEL_PROTOCOLS.build_detector(_prepare_directory_model_config(config))
+
+
+def _prepare_directory_model_config(config: ExperimentConfig) -> ExperimentConfig:
+    if config.detector.component_path is None:
+        return config
+    from ..components import ComponentDirectory, ComponentKind
+
+    component: ComponentDirectory = ComponentDirectory.load(
+        config.detector.component_path,
+        project_root=Path.cwd(),
+        kind=ComponentKind.MODEL,
+        expected_name=config.detector.name,
+    )
+    runtime_config: ExperimentConfig = config.model_copy(deep=True)
+    runtime_config.detector.component_path = str(component.root)
+    runtime_config.detector.config_path = str(component.config_path)
+    return runtime_config

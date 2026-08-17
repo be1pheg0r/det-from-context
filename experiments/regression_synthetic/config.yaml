@@ -4,8 +4,9 @@ defaults:
 name: synthetic-linear-regression
 
 data:
-  name: dummy
-  config_path: dataset_configs/synthetic_regression.yaml
+  name: synthetic_regression
+  component_path: datasets/synthetic_regression
+  config_path: datasets/synthetic_regression/config.yaml
   root: null
   context_k: 0
   context_strategy: empty
@@ -14,7 +15,9 @@ data:
   augmentations: []
 
 detector:
-  name: dummy
+  name: linear_regression
+  component_path: models/linear_regression
+  config_path: models/linear_regression/config.yaml
   variant: linear
   weights: null
   freeze_backbone: false

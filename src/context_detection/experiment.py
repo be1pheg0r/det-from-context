@@ -14,14 +14,23 @@ import shutil
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 from typing import Any, ClassVar
 
+import torch
 from omegaconf import OmegaConf
+from torch import nn
+from torch.utils.data import DataLoader
 
+from .components import (
+    ComponentDirectory,
+    ComponentKind,
+    load_component_directories,
+)
 from .config import ExperimentConfig, load_config
 
 
@@ -72,6 +81,10 @@ class ExperimentTracker(ABC):
     def fail(self, reason: str) -> None:
         """Отметить запуск завершённым с ошибкой."""
 
+    def describe(self) -> Mapping[str, Any]:
+        """Вернуть несекретные идентификаторы backend для metadata.json."""
+        return {"backend": type(self).__name__}
+
 
 class LocalTracker(ExperimentTracker):
     """Локальный backend; постоянные данные пишет :class:`ExperimentRun`."""
@@ -87,6 +100,10 @@ class LocalTracker(ExperimentTracker):
 
     def fail(self, reason: str) -> None:
         """Локальный статус обновляет сам запуск."""
+
+    def describe(self) -> Mapping[str, Any]:
+        """Обозначить локальный backend."""
+        return {"backend": "local"}
 
 
 class ClearMLTracker(ExperimentTracker):
@@ -144,6 +161,14 @@ class ClearMLTracker(ExperimentTracker):
         self._task.mark_failed(status_reason=reason)
         self._task.flush(wait_for_uploads=True)
 
+    def describe(self) -> Mapping[str, Any]:
+        """Вернуть task id и URL для последующей машинной проверки запуска."""
+        return {
+            "backend": "clearml",
+            "task_id": str(self._task.id),
+            "task_url": str(self._task.get_output_log_web_page()),
+        }
+
 
 class ExperimentRun:
     """Один активный запуск и его единая директория результатов."""
@@ -156,11 +181,15 @@ class ExperimentRun:
         root: Path,
         tracker: ExperimentTracker,
         metadata: Mapping[str, Any],
+        component_directories: Mapping[ComponentKind, ComponentDirectory] | None = None,
     ) -> None:
         self.config: ExperimentConfig = config
         self.root: Path = root
         self.tracker: ExperimentTracker = tracker
         self.status: RunStatus = RunStatus.RUNNING
+        self.component_directories: Mapping[ComponentKind, ComponentDirectory] = dict(
+            component_directories or {}
+        )
         self._metadata: dict[str, Any] = dict(metadata)
         self._logger: logging.Logger = self._make_logger()
         self._write_metadata()
@@ -174,6 +203,22 @@ class ExperimentRun:
     def artifacts_dir(self) -> Path:
         """Директория произвольных артефактов."""
         return self.root / ResultEntry.ARTIFACTS
+
+    @property
+    def dataset_config_path(self) -> Path:
+        """Абсолютный путь к проверенному dataset config этого запуска."""
+        return Path(self._metadata["dataset_config"])
+
+    @property
+    def model_config_path(self) -> Path | None:
+        """Абсолютный путь к model config, если он задан."""
+        value: str | None = self._metadata.get("model_config")
+        return Path(value) if value is not None else None
+
+    def record_metadata(self, name: str, value: Any) -> None:
+        """Добавить несекретные runtime metadata и сразу сохранить их."""
+        self._metadata[name] = value
+        self._write_metadata()
 
     def log_metrics(
         self,
@@ -302,7 +347,40 @@ class ExperimentRun:
         _write_json(self.root / ResultEntry.METADATA, self._metadata)
 
 
+@dataclass(frozen=True)
+class ExperimentComponents:
+    """Стандартные PyTorch endpoints, собранные experiment protocol."""
+
+    model: nn.Module
+    dataloaders: Mapping[str, DataLoader[Any]]
+    directories: Mapping[ComponentKind, ComponentDirectory]
+
+    def loader(self, split: str) -> DataLoader[Any]:
+        """Получить DataLoader по нормализованному имени split."""
+        normalized: str = "validation" if split == "val" else split
+        try:
+            return self.dataloaders[normalized]
+        except KeyError as error:
+            raise ValueError(
+                f"split {normalized!r} не собран; доступно: {sorted(self.dataloaders)}"
+            ) from error
+
+    def artifacts(self, kind: ComponentKind | str) -> Path:
+        """Вернуть artifacts/ directory конкретного folder component."""
+        component_kind: ComponentKind = ComponentKind(kind)
+        try:
+            return self.directories[component_kind].artifacts_path
+        except KeyError as error:
+            raise ValueError(
+                f"для {component_kind} не задана component directory"
+            ) from error
+
+
 ExperimentWorker = Callable[[ExperimentRun, ExperimentConfig], Mapping[str, Any] | None]
+ComponentExperimentWorker = Callable[
+    [ExperimentRun, ExperimentConfig, ExperimentComponents],
+    Mapping[str, Any] | None,
+]
 
 
 class ExperimentProtocol:
@@ -343,19 +421,44 @@ class ExperimentProtocol:
             resolved_config_path,
             override_values,
         )
-        dataset_config_path: Path = self._resolve_path(config.data.config_path)
+        component_directories: dict[ComponentKind, ComponentDirectory] = (
+            load_component_directories(config, self.project_root)
+        )
+        dataset_component: ComponentDirectory | None = component_directories.get(
+            ComponentKind.DATASET
+        )
+        model_component: ComponentDirectory | None = component_directories.get(
+            ComponentKind.MODEL
+        )
+        dataset_config_path: Path = (
+            dataset_component.config_path
+            if dataset_component is not None
+            else self._resolve_path(config.data.config_path)
+        )
         if not dataset_config_path.is_file():
             raise FileNotFoundError(dataset_config_path)
+        model_config_path: Path | None = None
+        if model_component is not None:
+            model_config_path = model_component.config_path
+        elif config.detector.config_path is not None:
+            model_config_path = self._resolve_path(config.detector.config_path)
+            if not model_config_path.is_file():
+                raise FileNotFoundError(model_config_path)
         root: Path = self._create_result_root(config)
         self._create_layout(root)
         OmegaConf.save(
             OmegaConf.create(config.model_dump(mode="json")),
             root / ResultEntry.CONFIG,
         )
+        component_sources: list[Path] = [
+            source
+            for component in component_directories.values()
+            for source in (component.provider_path, component.config_path)
+        ]
         self._snapshot_sources(
             root,
             resolved_config_path,
-            [dataset_config_path, *(source_paths or ())],
+            [dataset_config_path, *component_sources, *(source_paths or ())],
             launch_script,
         )
         tracker: ExperimentTracker = self._make_tracker(config)
@@ -365,10 +468,28 @@ class ExperimentProtocol:
             "started_at": _utc_now(),
             "config_source": str(resolved_config_path),
             "dataset_config": str(dataset_config_path),
+            "model_config": (
+                str(model_config_path) if model_config_path is not None else None
+            ),
+            "component_directories": {
+                kind.value: {
+                    "name": component.name,
+                    "root": str(component.root),
+                    "artifacts": str(component.artifacts_path),
+                }
+                for kind, component in component_directories.items()
+            },
             "overrides": override_values,
             "command": sys.argv,
+            "tracking": tracker.describe(),
         }
-        return ExperimentRun(config, root, tracker, metadata)
+        return ExperimentRun(
+            config,
+            root,
+            tracker,
+            metadata,
+            component_directories,
+        )
 
     def execute(
         self,
@@ -393,6 +514,95 @@ class ExperimentProtocol:
             if summary is not None:
                 experiment.complete(summary)
         return experiment.root
+
+    def execute_components(
+        self,
+        config_path: str | Path,
+        worker: ComponentExperimentWorker,
+        *,
+        splits: Sequence[str] = ("train", "validation"),
+        overrides: Sequence[str] | None = None,
+        source_paths: Sequence[str | Path] | None = None,
+        launch_script: str | Path | None = None,
+    ) -> Path:
+        """Собрать DataLoader/nn.Module endpoints и выполнить component worker.
+
+        Tracker, включая ClearML Task, создаётся до модели и DataLoader. Это
+        позволяет framework integration наблюдать модель, а worker не может
+        случайно обойти зарегистрированные component protocols.
+        """
+        from .data.protocols import DatasetSplit, build_dataloader
+        from .models.protocols import build_registered_model
+
+        experiment: ExperimentRun = self.start(
+            config_path=config_path,
+            overrides=overrides,
+            source_paths=source_paths,
+            launch_script=launch_script,
+        )
+        with experiment:
+            runtime_config: ExperimentConfig = experiment.config.model_copy(deep=True)
+            runtime_config.data.config_path = str(experiment.dataset_config_path)
+            dataset_component = experiment.component_directories.get(
+                ComponentKind.DATASET
+            )
+            if dataset_component is not None:
+                runtime_config.data.component_path = str(dataset_component.root)
+            model_component = experiment.component_directories.get(ComponentKind.MODEL)
+            if model_component is not None:
+                runtime_config.detector.component_path = str(model_component.root)
+                runtime_config.detector.config_path = str(model_component.config_path)
+            torch.manual_seed(runtime_config.train.seed)
+            model: nn.Module = build_registered_model(runtime_config)
+            dataloaders: dict[str, DataLoader[Any]] = {}
+            for split_name in splits:
+                split: DatasetSplit = DatasetSplit.parse(split_name)
+                dataloaders[split.value] = build_dataloader(runtime_config, split)
+            components = ExperimentComponents(
+                model=model,
+                dataloaders=dataloaders,
+                directories=experiment.component_directories,
+            )
+            experiment.record_metadata(
+                "components",
+                {
+                    "dataset_protocol": runtime_config.data.name,
+                    "model_protocol": runtime_config.detector.name,
+                    "dataset_endpoint": "DataLoader",
+                    "model_endpoint": type(model).__name__,
+                    "splits": sorted(dataloaders),
+                },
+            )
+            summary: Mapping[str, Any] | None = worker(
+                experiment,
+                runtime_config,
+                components,
+            )
+            self._publish_component_artifacts(experiment)
+            if summary is not None:
+                experiment.complete(summary)
+        return experiment.root
+
+    @staticmethod
+    def _publish_component_artifacts(experiment: ExperimentRun) -> None:
+        published: list[str] = []
+        for kind, component in experiment.component_directories.items():
+            for artifact in sorted(component.artifacts_path.rglob("*")):
+                if (
+                    not artifact.is_file()
+                    or artifact.name.startswith(".")
+                    or artifact.suffix.lower() == ".md"
+                ):
+                    continue
+                relative_name: str = (
+                    str(artifact.relative_to(component.artifacts_path))
+                    .replace("\\", "__")
+                    .replace("/", "__")
+                )
+                artifact_name: str = f"{kind.value}__{relative_name}"
+                experiment.save_artifact(artifact_name, artifact)
+                published.append(artifact_name)
+        experiment.record_metadata("component_artifacts", published)
 
     def _load_environment(self) -> None:
         env_path: Path = self.project_root / self._ENV_FILE

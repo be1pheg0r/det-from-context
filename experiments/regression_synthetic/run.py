@@ -14,7 +14,7 @@ def main() -> None:
     experiment_dir: Path = Path(__file__).resolve().parent
     project_root: Path = experiment_dir.parents[1]
     protocol: ExperimentProtocol = ExperimentProtocol(project_root)
-    result_dir: Path = protocol.execute(
+    result_dir: Path = protocol.execute_components(
         config_path=experiment_dir / "config.yaml",
         worker=run_regression,
         source_paths=[experiment_dir / "worker.py"],
