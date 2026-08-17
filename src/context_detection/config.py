@@ -163,6 +163,7 @@ class HydraConfigLoader:
             FileNotFoundError: Файл конфигурации не существует.
             ValueError: Передан конфиг в неподдерживаемом формате.
             TypeError: Результат композиции не является отображением.
+            ConfigCompositionException: Ошибка композиции Hydra (например, неизвестный override).
         """
         config_path: Path = Path(path)
         self._validate_path(config_path)
