@@ -7,10 +7,12 @@
 
 from __future__ import annotations
 
-import json
+from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
+from hydra import compose, initialize_config_dir
+from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .registry import (
@@ -134,55 +136,82 @@ class ExperimentConfig(_Section):
         return self
 
 
-def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
-    out = dict(base)
-    for key, value in over.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = _merge(out[key], value)
-        else:
-            out[key] = value
-    return out
+class ConfigFileExtension(StrEnum):
+    """Поддерживаемые расширения конфигурационных файлов."""
+
+    YAML = ".yaml"
 
 
-def _coerce(text: str) -> Any:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return text
+class HydraConfigLoader:
+    """Компонует YAML-конфигурацию Hydra и проверяет доменную схему."""
+
+    _JOB_NAME: ClassVar[str] = "context_detection_config"
+
+    def load(
+        self, path: str | Path, overrides: list[str] | None = None
+    ) -> ExperimentConfig:
+        """Загрузить и провалидировать конфигурацию эксперимента.
+
+        Args:
+            path: Путь к корневому YAML-конфигу Hydra.
+            overrides: Выражения Hydra Override Grammar.
+
+        Returns:
+            Скомпонованная и провалидированная конфигурация эксперимента.
+
+        Raises:
+            FileNotFoundError: Файл конфигурации не существует.
+            ValueError: Передан конфиг в неподдерживаемом формате.
+            TypeError: Результат композиции не является отображением.
+        """
+        config_path: Path = Path(path)
+        self._validate_path(config_path)
+        config_dir: Path = config_path.parent.resolve()
+        override_values: list[str] = list(overrides or ())
+
+        with initialize_config_dir(
+            version_base="1.3",
+            config_dir=str(config_dir),
+            job_name=self._JOB_NAME,
+        ):
+            composed: DictConfig = compose(
+                config_name=config_path.stem,
+                overrides=override_values,
+            )
+
+        raw: Any = OmegaConf.to_container(
+            composed,
+            resolve=True,
+            throw_on_missing=True,
+        )
+        if not isinstance(raw, dict):
+            raise TypeError("корневой узел Hydra-конфига должен быть отображением")
+        return ExperimentConfig.model_validate(raw)
+
+    @staticmethod
+    def _validate_path(path: Path) -> None:
+        if path.suffix != ConfigFileExtension.YAML:
+            raise ValueError(
+                f"ожидался Hydra YAML-конфиг с расширением "
+                f"{ConfigFileExtension.YAML}, получено {path}"
+            )
+        if not path.is_file():
+            raise FileNotFoundError(path)
+
+
+_CONFIG_LOADER: HydraConfigLoader = HydraConfigLoader()
 
 
 def load_config(
     path: str | Path, overrides: list[str] | None = None
 ) -> ExperimentConfig:
-    """Загрузить конфиг с раскрытием "_base_" и override'ами "a.b=value".
+    """Загрузить Hydra-конфиг с defaults-композицией и override'ами.
 
-    Override'ы нужны Человеку 5: сетка по длине истории — это один конфиг и
-    десяток запусков с `data.context_k=...`, а не десять почти одинаковых
-    файлов, которые разъезжаются на второй неделе.
+    Args:
+        path: Путь к корневому ``.yaml``-конфигу.
+        overrides: Выражения Hydra Override Grammar вида ``a.b=value``.
+
+    Returns:
+        Строго провалидированная конфигурация эксперимента.
     """
-    path = Path(path)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    raw.pop("_comment", None)
-
-    seen = {path.resolve()}
-    while "_base_" in raw:
-        base_path = (path.parent / raw.pop("_base_")).resolve()
-        if base_path in seen:
-            raise ValueError(f"цикл в _base_: {base_path}")
-        seen.add(base_path)
-        base = json.loads(base_path.read_text(encoding="utf-8"))
-        base.pop("_comment", None)
-        raw = _merge(base, raw)
-        path = base_path
-
-    for item in overrides or []:
-        key, _, value = item.partition("=")
-        if not _:
-            raise ValueError(f"override должен быть вида a.b=value, получено {item!r}")
-        node = raw
-        *parents, leaf = key.split(".")
-        for part in parents:
-            node = node.setdefault(part, {})
-        node[leaf] = _coerce(value)
-
-    return ExperimentConfig.model_validate(raw)
+    return _CONFIG_LOADER.load(path, overrides)

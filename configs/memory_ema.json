@@ -1,5 +1,0 @@
-{
-  "_base_": "_base.json",
-  "_comment": "Milestone 2: MeMOTR-стиль EMA-слот. Первая реальная память.",
-  "context": {"name": "ema_slot", "fusion": "gated_residual"}
-}

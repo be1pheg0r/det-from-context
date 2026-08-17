@@ -69,7 +69,7 @@ Settings → Rules → New branch ruleset → require status checks `lint` и `t
 - [x] `MemoryState.empty / detach / reset`
 - [x] ABC `DetectorAdapter`, `ContextModule` — оба `nn.Module`
 - [x] `wrapper.py` — `ContextDetector` + `Fusion` (residual / gated / concat)
-- [x] `config.py` — Pydantic-конфиги, `_base_`, override'ы `a.b=value`
+- [x] `config.py` — Hydra Defaults List/overrides + строгая Pydantic-валидация
 - [x] `build.py` — фабрики, `make_dummy_batch`
 - [x] `configs/` — 6 файлов, по одному на ветку + `dummy`
 - [x] `DummyDetector` — настоящий обучаемый мини-DETR, не случайные числа
@@ -80,7 +80,7 @@ Settings → Rules → New branch ruleset → require status checks `lint` и `t
 
 **DoD — выполнено:**
 ```python
-model = build_model(load_config("configs/dummy.json"))
+model = build_model(load_config("configs/dummy.yaml"))
 output, state = model(*make_dummy_batch())  # без датасета и без RF-DETR
 ```
 

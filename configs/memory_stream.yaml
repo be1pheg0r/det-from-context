@@ -1,0 +1,12 @@
+defaults:
+  - _base_
+  - _self_
+
+# Milestone 3: StreamPETR-очередь, motion-aware выравнивание и гейт записи.
+data:
+  clip_len: 8
+context:
+  name: stream_queue
+  fusion: gated_residual
+  write_gate: true
+  motion: constant_velocity
