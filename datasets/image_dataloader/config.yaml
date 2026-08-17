@@ -29,6 +29,7 @@ dataloader:
 
 classes:
   # Соответствие category из JSON -> числовой class_id
+
   "person": 0
   "car": 1
   "truck": 2
@@ -37,3 +38,7 @@ classes:
   "bicycle": 5
   "traffic light": 6
   "traffic sign": 7
+  "rider": 8
+  "bike": 9
+  "motor": 10
+  "train": 11
