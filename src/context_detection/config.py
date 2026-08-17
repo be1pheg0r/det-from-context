@@ -29,13 +29,31 @@ class _Section(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class OptimizerName(StrEnum):
+    """Поддерживаемые оптимизаторы эксперимента."""
+
+    ADAMW = "adamw"
+    SGD = "sgd"
+
+
+class LogLevel(StrEnum):
+    """Поддерживаемые уровни журналирования."""
+
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
 class DataConfig(_Section):
     name: DatasetName = "dummy"
+    config_path: str = Field("dataset_configs/dummy.yaml", min_length=1)
     root: str | None = None
     context_k: int = Field(4, ge=0)
     context_strategy: ContextStrategy = "prev_k"
     clip_len: int = Field(4, ge=1)
     image_size: int = Field(224, gt=0)
+    augmentations: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _check(self) -> DataConfig:
@@ -104,6 +122,10 @@ class TrainConfig(_Section):
     lr: float = Field(1e-4, gt=0)
     batch_size: int = Field(2, gt=0)
     grad_accum: int = Field(1, ge=1)
+    optimizer: OptimizerName = OptimizerName.ADAMW
+    weight_decay: float = Field(1e-4, ge=0.0)
+    num_workers: int = Field(4, ge=0)
+    seed: int = Field(42, ge=0)
     amp: bool = True
     denoising: bool = True
     #: False = полный BPTT по клипу. Не запрещаем — иногда нужно для проверки
@@ -111,15 +133,60 @@ class TrainConfig(_Section):
     detach_state: bool = True
 
 
+class ValidationConfig(_Section):
+    """Параметры периодической оценки модели."""
+
+    metrics: list[str] = Field(
+        default_factory=lambda: ["map", "map_50"],
+        min_length=1,
+    )
+    every_n_epochs: int = Field(1, gt=0)
+    batch_size: int = Field(2, gt=0)
+
+
+class LoggingConfig(_Section):
+    """Параметры локального журналирования."""
+
+    level: LogLevel = LogLevel.INFO
+    every_n_steps: int = Field(20, gt=0)
+
+
+class OutputConfig(_Section):
+    """Единая схема сохранения результатов эксперимента."""
+
+    root: str = Field("outputs", min_length=1)
+    checkpoint_every_n_epochs: int = Field(1, gt=0)
+    keep_last_checkpoints: int = Field(3, gt=0)
+    save_best: bool = True
+    monitor: str = Field("map", min_length=1)
+
+
+class ClearMLConfig(_Section):
+    """Настройки ClearML; секреты читаются только из ``.env``."""
+
+    enabled: bool = False
+    project_name: str = Field("context-detection", min_length=1)
+    tags: list[str] = Field(default_factory=list)
+
+
 class ExperimentConfig(_Section):
-    name: str = "unnamed"
+    name: str = Field("unnamed", min_length=1)
     data: DataConfig = Field(default_factory=DataConfig)
     detector: DetectorConfig = Field(default_factory=DetectorConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     train: TrainConfig = Field(default_factory=TrainConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    output: OutputConfig = Field(default_factory=OutputConfig)
+    clearml: ClearMLConfig = Field(default_factory=ClearMLConfig)
 
     @model_validator(mode="after")
     def _check(self) -> ExperimentConfig:
+        if self.output.monitor not in self.validation.metrics:
+            raise ValueError(
+                f"output.monitor={self.output.monitor!r} отсутствует "
+                "в validation.metrics"
+            )
         name = self.context.name
         if name in NEEDS_CONTEXT_FRAMES and not self.data.context_k:
             raise ValueError(f"{name} читает пиксели контекстных кадров, а context_k=0")

@@ -11,6 +11,8 @@ dependencies = [
     "matplotlib",
     "pydantic",
     "hydra-core==1.3.4",
+    "clearml",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]
