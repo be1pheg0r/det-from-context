@@ -19,12 +19,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
-import torch
 from omegaconf import OmegaConf
-from torch import nn
-from torch.utils.data import DataLoader
+
+if TYPE_CHECKING:
+    from torch import nn
+    from torch.utils.data import DataLoader
 
 from .components import (
     ComponentDirectory,
@@ -531,6 +532,8 @@ class ExperimentProtocol:
         позволяет framework integration наблюдать модель, а worker не может
         случайно обойти зарегистрированные component protocols.
         """
+        import torch
+
         from .data.protocols import DatasetSplit, build_dataloader
         from .models.protocols import build_registered_model
 
