@@ -1,0 +1,39 @@
+# config.yaml
+
+dataset:
+  images_dir: "../out/images_test_2"
+  annotations_dir: "../out/labels3"
+
+  # Максимальное разрешение изображения.
+  # Если исходное изображение больше, оно будет уменьшено
+  # с сохранением пропорций.
+  image_size:
+    width: 1280
+    height: 720
+
+  # Расширения файлов изображений, которые обрабатываем
+  image_extensions:
+    - ".jpg"
+    - ".jpeg"
+    - ".png"
+
+
+dataloader:
+  batch_size: 1
+  shuffle: true
+  num_workers: 4
+
+  # Если True — возвращать target для каждого изображения
+  return_targets: true
+
+
+classes:
+  # Соответствие category из JSON -> числовой class_id
+  "person": 0
+  "car": 1
+  "truck": 2
+  "bus": 3
+  "motorcycle": 4
+  "bicycle": 5
+  "traffic light": 6
+  "traffic sign": 7

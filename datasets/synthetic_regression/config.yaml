@@ -1,0 +1,8 @@
+name: synthetic_regression
+samples: 256
+x_min: -2.0
+x_max: 2.0
+slope: 3.0
+intercept: 2.0
+noise_std: 0.15
+validation_fraction: 0.2
