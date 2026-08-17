@@ -95,7 +95,7 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 # 2. НАСТРОЙКИ
 # ---------------------------------------------------------------------------
 
-DEST_DIR = "./bdd100k_downloads"
+DEST_DIR = "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads"
 CHUNK_SIZE = 4 * 1024 * 1024  # для режима "stream" (обычный HTTP-докачка)
 
 # Для чтения файлов ВНУТРИ zip через remotezip чанк должен быть заметно
@@ -107,7 +107,7 @@ CHUNK_SIZE = 4 * 1024 * 1024  # для режима "stream" (обычный HTT
 ZIP_READ_CHUNK_SIZE = 256 * 1024  # 256 КБ
 
 # Папка для кеша оглавлений удалённых архивов
-CACHE_DIR = os.path.join(DEST_DIR, ".cache")
+CACHE_DIR = os.path.join(".cache")
 USE_INDEX_CACHE = True  # поставьте False, чтобы всегда читать оглавление заново
 
 DOWNLOAD_PLAN = {
