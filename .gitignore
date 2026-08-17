@@ -222,3 +222,6 @@ __marimo__/
 creds*
 agent_specs/
 edits/
+
+# Experiment results
+/outputs/

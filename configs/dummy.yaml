@@ -6,6 +6,7 @@ defaults:
 name: dummy
 data:
   name: dummy
+  config_path: dataset_configs/dummy.yaml
   root: null
   clip_len: 2
   image_size: 64

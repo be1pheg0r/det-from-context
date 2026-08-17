@@ -1,0 +1,79 @@
+defaults:
+  - _self_
+
+name: dummy-protocol
+
+data:
+  name: dummy
+  config_path: dataset_configs/dummy.yaml
+  root: null
+  context_k: 4
+  context_strategy: prev_k
+  clip_len: 2
+  image_size: 64
+  augmentations: []
+
+detector:
+  name: dummy
+  variant: null
+  weights: null
+  freeze_backbone: false
+  freeze_decoder: false
+  num_queries: 20
+  dim: 32
+  num_classes: 31
+  num_heads: 4
+  num_decoder_layers: 2
+
+context:
+  name: none
+  fusion: residual
+  num_slots: 64
+  memory_length: 24
+  short_memory_length: 3
+  write_threshold: 0.5
+  max_missed: 24
+  association_iou_threshold: 0.1
+  association_cosine_threshold: 0.5
+  association_appearance_weight: 0.25
+  motion_momentum: 0.8
+  write_gate: false
+  motion: null
+  horizon: 0
+
+train:
+  epochs: 1
+  lr: 1e-4
+  batch_size: 2
+  grad_accum: 1
+  optimizer: adamw
+  weight_decay: 1e-4
+  num_workers: 0
+  seed: 42
+  amp: false
+  denoising: false
+  detach_state: true
+
+validation:
+  metrics:
+    - map
+    - map_50
+  every_n_epochs: 1
+  batch_size: 2
+
+logging:
+  level: INFO
+  every_n_steps: 1
+
+output:
+  root: outputs
+  checkpoint_every_n_epochs: 1
+  keep_last_checkpoints: 1
+  save_best: true
+  monitor: map
+
+clearml:
+  enabled: ${oc.env:CLEARML_ENABLED,false}
+  project_name: context-detection
+  tags:
+    - protocol-smoke
