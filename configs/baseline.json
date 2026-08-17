@@ -1,5 +1,0 @@
-{
-  "_base_": "_base.json",
-  "_comment": "Milestone 1: RF-DETR без контекста. Точка отсчёта для всех ΔAP.",
-  "context": {"name": "none"}
-}

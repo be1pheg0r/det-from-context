@@ -1,0 +1,8 @@
+defaults:
+  - _base_
+  - _self_
+
+# Ablation-контроль: feature-level контекст над K кадрами.
+context:
+  name: cross_attn
+  fusion: residual

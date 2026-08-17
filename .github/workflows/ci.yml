@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       # Быстрая линия: конфиги и реестр имён проверяются без torch за секунды.
-      - run: pip install pytest pydantic
+      - run: pip install pytest pydantic hydra-core==1.3.4
       - run: pytest -q tests/test_configs.py
 
       # Контракты стали Pydantic поверх Tensor, поэтому проверить их без torch

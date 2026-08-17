@@ -1,0 +1,28 @@
+# Общая конфигурация. Путь к датасету задаётся override-ом data.root=...
+data:
+  name: imagenet_vid
+  root: null
+  context_k: 4
+  context_strategy: prev_k
+  clip_len: 4
+
+detector:
+  name: rfdetr
+  variant: base
+  weights: null
+  freeze_backbone: true
+  num_queries: 300
+  dim: 256
+
+context:
+  name: none
+  fusion: residual
+  num_slots: 64
+
+train:
+  epochs: 12
+  lr: 1e-4
+  batch_size: 2
+  grad_accum: 1
+  amp: true
+  denoising: true
