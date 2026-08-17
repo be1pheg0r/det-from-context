@@ -16,7 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 # Версия ruff пиновая: она должна совпадать с rev в .pre-commit-config.yaml и
 # с version в CI, иначе «локально зелено, в CI красно».
-dev = ["pytest", "ruff==0.16.3"]
+dev = ["pre-commit", "pytest", "ruff==0.16.3"]
 
 [build-system]
 requires = ["setuptools>=68"]
