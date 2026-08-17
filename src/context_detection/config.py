@@ -16,11 +16,12 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .registry import (
+    DATASETS,
+    DATASETS_REQUIRING_ROOT,
+    DETECTORS,
     NEEDS_CONTEXT_FRAMES,
     ContextName,
     ContextStrategy,
-    DatasetName,
-    DetectorName,
     FusionMode,
 )
 
@@ -46,7 +47,8 @@ class LogLevel(StrEnum):
 
 
 class DataConfig(_Section):
-    name: DatasetName = "dummy"
+    name: str = "dummy"
+    component_path: str | None = None
     config_path: str = Field("dataset_configs/dummy.yaml", min_length=1)
     root: str | None = None
     context_k: int = Field(4, ge=0)
@@ -57,7 +59,11 @@ class DataConfig(_Section):
 
     @model_validator(mode="after")
     def _check(self) -> DataConfig:
-        if self.name != "dummy" and not self.root:
+        if self.name not in DATASETS and self.component_path is None:
+            raise ValueError(
+                f"неизвестный датасет {self.name!r}, доступно: {sorted(DATASETS)}"
+            )
+        if self.name in DATASETS_REQUIRING_ROOT and not self.root:
             raise ValueError(f"датасету {self.name!r} нужен root")
         if self.context_strategy == "empty" and self.context_k:
             raise ValueError(
@@ -68,7 +74,9 @@ class DataConfig(_Section):
 
 
 class DetectorConfig(_Section):
-    name: DetectorName = "dummy"
+    name: str = "dummy"
+    component_path: str | None = None
+    config_path: str | None = None
     variant: str | None = None
     weights: str | None = None
     freeze_backbone: bool = False
@@ -81,6 +89,10 @@ class DetectorConfig(_Section):
 
     @model_validator(mode="after")
     def _check(self) -> DetectorConfig:
+        if self.name not in DETECTORS and self.component_path is None:
+            raise ValueError(
+                f"неизвестная модель {self.name!r}, доступно: {sorted(DETECTORS)}"
+            )
         if self.dim % self.num_heads:
             raise ValueError(f"dim={self.dim} не делится на num_heads={self.num_heads}")
         if self.name == "rfdetr" and not self.variant:

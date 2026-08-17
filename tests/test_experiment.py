@@ -127,6 +127,8 @@ def test_clearml_tracker_closes_without_terminating_process(
     calls: list[tuple[str, Any]] = []
 
     class FakeTask:
+        id = "clearml-task-123"
+
         @classmethod
         def init(cls, **kwargs: Any) -> FakeTask:
             calls.append(("init", kwargs))
@@ -137,6 +139,9 @@ def test_clearml_tracker_closes_without_terminating_process(
 
         def get_logger(self) -> SimpleNamespace:
             return SimpleNamespace(report_scalar=lambda **kwargs: None)
+
+        def get_output_log_web_page(self) -> str:
+            return "https://clearml.example/projects/demo/experiments/clearml-task-123"
 
         def upload_artifact(self, **kwargs: Any) -> None:
             calls.append(("upload", kwargs))
@@ -155,6 +160,13 @@ def test_clearml_tracker_closes_without_terminating_process(
     monkeypatch.setitem(sys.modules, "clearml", SimpleNamespace(Task=FakeTask))
 
     tracker: ClearMLTracker = ClearMLTracker(ExperimentConfig())
+    assert tracker.describe() == {
+        "backend": "clearml",
+        "task_id": "clearml-task-123",
+        "task_url": (
+            "https://clearml.example/projects/demo/experiments/clearml-task-123"
+        ),
+    }
     tracker.complete()
 
     assert ("close", None) in calls

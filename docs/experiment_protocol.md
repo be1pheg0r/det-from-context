@@ -28,3 +28,9 @@ Worker принимает `ExperimentRun` и `ExperimentConfig`, пишет ск
 `log_metrics`, сохраняет файлы через `save_artifact` и возвращает словарь для
 `summary.json`. Context manager гарантирует статусы `completed`/`failed` и
 синхронное завершение ClearML task.
+
+Для моделей и датасетов, оформленных self-contained папками, используется
+`ExperimentProtocol.execute_components(...)`. Он проверяет directory providers,
+создаёт ClearML Task, затем строит стандартные `DataLoader`/`nn.Module` endpoints
+и передаёт их worker через `ExperimentComponents`. Runtime artifacts
+компонентов копируются в запуск и публикуются в ClearML автоматически.
