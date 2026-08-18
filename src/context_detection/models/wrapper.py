@@ -105,13 +105,20 @@ class ContextDetector(nn.Module):
             encoded = self.detector.encode_context_frames(context)
 
         queries = self.detector.initial_queries(batch)
-        ctx = self.context_module.read(queries, state, context, encoded)
+        ctx = self.context_module.read(
+            queries,
+            state,
+            context,
+            encoded,
+            current_timestamp=batch.timestamp,
+        )
         output = self.detector(batch, query_init=self.fusion(queries, ctx.query_delta))
 
         state = self.context_module.write(
             ctx.memory_state if ctx.memory_state is not None else state,
             output,
             context,
+            current_timestamp=batch.timestamp,
         )
         if state is not None and self.detach_state:
             state = state.detach()

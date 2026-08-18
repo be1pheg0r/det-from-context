@@ -219,5 +219,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+
 test_job.py
 job_config.yaml
+
+creds*
+agent_specs/
+edits/
+
+# Experiment results
+/outputs/

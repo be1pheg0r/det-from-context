@@ -11,7 +11,9 @@ from typing import Any, Literal, get_args
 
 DatasetName = Literal["imagenet_vid", "ovis", "dummy"]
 DetectorName = Literal["rfdetr", "dummy"]
-ContextName = Literal["none", "ema_slot", "cross_attn", "stream_queue", "bridge_ad"]
+ContextName = Literal[
+    "none", "memot", "ema_slot", "cross_attn", "stream_queue", "bridge_ad"
+]
 FusionMode = Literal["residual", "gated_residual", "concat_proj"]
 ContextStrategy = Literal["prev_k", "uniform", "random", "empty", "shuffled"]
 AttachPoint = Literal[
@@ -23,8 +25,9 @@ def _values(alias: Any) -> frozenset[str]:
     return frozenset(get_args(alias))
 
 
-DATASETS = _values(DatasetName)
-DETECTORS = _values(DetectorName)
+DATASETS: set[str] = set(_values(DatasetName))
+DETECTORS: set[str] = set(_values(DetectorName))
+DATASETS_REQUIRING_ROOT = frozenset({"imagenet_vid", "ovis"})
 CONTEXT_MODULES = _values(ContextName)
 FUSION_MODES = _values(FusionMode)
 CONTEXT_STRATEGIES = _values(ContextStrategy)
@@ -36,3 +39,25 @@ ATTACH_POINTS = _values(AttachPoint)
 #: единственный модуль, который импортируют обе стороны и который не тянет torch.
 #: Согласованность с классами проверяет test_needs_context_frames_matches_registry.
 NEEDS_CONTEXT_FRAMES = frozenset({"cross_attn"})
+
+
+def register_dataset_name(name: str) -> None:
+    """Добавить имя датасета до валидации его Hydra-конфига.
+
+    Args:
+        name: Непустое имя, под которым зарегистрирован dataset protocol.
+    """
+    if not name.strip():
+        raise ValueError("имя датасета не может быть пустым")
+    DATASETS.add(name)
+
+
+def register_detector_name(name: str) -> None:
+    """Добавить имя модели до валидации её Hydra-конфига.
+
+    Args:
+        name: Непустое имя, под которым зарегистрирован model protocol.
+    """
+    if not name.strip():
+        raise ValueError("имя модели не может быть пустым")
+    DETECTORS.add(name)
