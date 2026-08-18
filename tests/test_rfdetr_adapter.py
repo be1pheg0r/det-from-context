@@ -277,13 +277,16 @@ def test_rfdetr_directory_component_builds_model_protocol(
     "ignore:`torch.jit.script` is deprecated:DeprecationWarning"
 )
 def test_component_config_passes_upstream_model_validation() -> None:
-    from rfdetr.config import RFDETRSmallConfig
+    upstream_config_module: Any = pytest.importorskip(
+        "rfdetr.config",
+        reason="официальная схема доступна только с установленным rfdetr",
+    )
 
     config_path: Path = Path("models/rfdetr/config.yaml")
     raw: Any = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     assert isinstance(raw, dict)
 
-    upstream_config = RFDETRSmallConfig(**raw["model"])
+    upstream_config = upstream_config_module.RFDETRSmallConfig(**raw["model"])
 
     assert upstream_config.hidden_dim == 256
     assert upstream_config.num_classes == 31
