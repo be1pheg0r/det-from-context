@@ -10,7 +10,6 @@ def box_cxcywh_to_xyxy(x):
 
 
 def generalized_box_iou(boxes1, boxes2):
-    # Метрика GIoU для ограничивающих рамок
     area1, area2 = (
         (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0)
         * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0),
@@ -35,7 +34,6 @@ def generalized_box_iou(boxes1, boxes2):
 
 
 class HungarianMatcher(nn.Module):
-    # Двудольное сопоставление (Hungarian algorithm) предсказаний и таргетов
     def __init__(self, cost_class=2.0, cost_bbox=5.0, cost_giou=2.0):
         super().__init__()
         self.cost_class, self.cost_bbox, self.cost_giou = (
@@ -73,54 +71,44 @@ class HungarianMatcher(nn.Module):
 
 
 class SetCriterion(nn.Module):
-    # Focal loss для классов, L1 + GIoU для боксов
     def __init__(self, num_classes, cls_weight=2.0, bbox_weight=5.0, giou_weight=2.0):
         super().__init__()
         self.matcher = HungarianMatcher(cls_weight, bbox_weight, giou_weight)
         self.weights = {"cls": cls_weight, "bbox": bbox_weight, "giou": giou_weight}
 
     def forward(self, logits, boxes, targets):
-        total = {"loss_cls": 0.0, "loss_bbox": 0.0, "loss_giou": 0.0}
-        for layer_index in range(logits.shape[0]):
-            indices = self.matcher(logits[layer_index], boxes[layer_index], targets)
-            cls_target, bbox_l1, bbox_giou, num_pos = (
-                torch.zeros_like(logits[layer_index]),
-                0.0,
-                0.0,
-                0,
-            )
-            for b, (pi, ti) in enumerate(indices):
-                if pi.numel() == 0:
-                    continue
-                cls_target[b, pi, targets[b]["labels"][ti].to(logits.device)] = 1.0
-                pred_b, tgt_b = (
-                    boxes[layer_index][b, pi],
-                    targets[b]["boxes"][ti].to(logits.device),
-                )
-                bbox_l1 += F.l1_loss(pred_b, tgt_b, reduction="sum")
-                bbox_giou += (
-                    1
-                    - generalized_box_iou(
-                        box_cxcywh_to_xyxy(pred_b), box_cxcywh_to_xyxy(tgt_b)
-                    ).diag()
-                ).sum()
-                num_pos += pi.numel()
+        indices = self.matcher(logits, boxes, targets)
+        cls_target = torch.zeros_like(logits)
+        bbox_l1, bbox_giou, num_pos = 0.0, 0.0, 0
 
-            num_pos = max(num_pos, 1)
-            probability = logits[layer_index].sigmoid()
-            p_t = probability * cls_target + (1 - probability) * (1 - cls_target)
-            loss_cls = (
-                F.binary_cross_entropy_with_logits(
-                    logits[layer_index], cls_target, reduction="none"
-                )
-                * ((1 - p_t) ** 2)
-                * (0.25 * cls_target + 0.75 * (1 - cls_target))
-            ).sum() / num_pos
+        for b, (pi, ti) in enumerate(indices):
+            if pi.numel() == 0:
+                continue
+            cls_target[b, pi, targets[b]["labels"][ti].to(logits.device)] = 1.0
+            pred_b, tgt_b = boxes[b, pi], targets[b]["boxes"][ti].to(logits.device)
+            bbox_l1 += F.l1_loss(pred_b, tgt_b, reduction="sum")
+            bbox_giou += (
+                1
+                - generalized_box_iou(
+                    box_cxcywh_to_xyxy(pred_b), box_cxcywh_to_xyxy(tgt_b)
+                ).diag()
+            ).sum()
+            num_pos += pi.numel()
 
-            total["loss_cls"] += self.weights["cls"] * loss_cls
-            total["loss_bbox"] += self.weights["bbox"] * (bbox_l1 / num_pos)
-            total["loss_giou"] += self.weights["giou"] * (bbox_giou / num_pos)
+        num_pos = max(num_pos, 1)
+        probability = logits.sigmoid()
+        p_t = probability * cls_target + (1 - probability) * (1 - cls_target)
+        loss_cls = (
+            F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+            * ((1 - p_t) ** 2)
+            * (0.25 * cls_target + 0.75 * (1 - cls_target))
+        ).sum() / num_pos
 
+        total = {
+            "loss_cls": self.weights["cls"] * loss_cls,
+            "loss_bbox": self.weights["bbox"] * (bbox_l1 / num_pos),
+            "loss_giou": self.weights["giou"] * (bbox_giou / num_pos),
+        }
         total["loss_total"] = (
             total["loss_cls"] + total["loss_bbox"] + total["loss_giou"]
         )
