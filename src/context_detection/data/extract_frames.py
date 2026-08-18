@@ -22,9 +22,10 @@ except ImportError:
 
 # ========================= НАСТРОЙКИ =========================
 VIDEOS_DIR = Path(
-    "/job/s3/bt17f0k57rfieh8/bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
+    "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bdd100k/videos/100k/train"
 )  # папка с видео
-OUT_IMAGES_DIR = Path("out/images_test_2")  # куда сохранять вырезанные кадры
+OUT_IMAGES_DIR = Path("/job/s3/bt17f0k57rfieh6jugr8/IMAGES_TRAIN")
+# куда сохранять вырезанные кадры
 
 TIMESTAMP_MS = 10000  # какой кадр брать (в миллисекундах от начала видео)
 IMAGE_EXT = ".jpg"  # расширение картинок: ".jpg" или ".png"
