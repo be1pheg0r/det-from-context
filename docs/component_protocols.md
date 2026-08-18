@@ -77,7 +77,10 @@ PROTOCOL = MyModelProtocol()
 Конечный объект всегда проверяется как `torch.nn.Module`. Detection provider
 может дополнительно реализовать `build_detector(config) -> DetectorAdapter`,
 что сохраняет совместимость старого `build_detector`. Встроенные `dummy` и
-`rfdetr` продолжают работать без component directory через тот же registry.
+совместимый RF-DETR fallback продолжают работать через тот же registry, однако
+стандартные experiment configs подключают RF-DETR как directory component из
+`models/rfdetr`. Детали адаптера, весов и входного контракта описаны в
+[`docs/rfdetr.md`](rfdetr.md).
 
 ## Experiment endpoint и ClearML
 

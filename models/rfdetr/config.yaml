@@ -1,0 +1,54 @@
+name: rfdetr
+variant: small
+
+# Эти поля передаются напрямую в официальный RFDETRSmall(ModelConfig).
+# Неизвестные ключи и несовместимые значения отклоняет upstream Pydantic-схема.
+model:
+  encoder: dinov2_windowed_small
+  out_feature_indexes: [3, 6, 9, 12]
+  dec_layers: 3
+  two_stage: true
+  projector_scale: [P4]
+  hidden_dim: 256
+  patch_size: 16
+  num_windows: 2
+  sa_nheads: 8
+  ca_nheads: 16
+  dec_n_points: 2
+
+  num_queries: 300
+  num_select: 300
+  num_classes: 31
+  group_detr: 13
+  num_decoder_registers: 0
+
+  resolution: 512
+  positional_encoding_size: 32
+  num_channels: 3
+
+  bbox_reparam: true
+  lite_refpoint_refine: true
+  layer_norm: true
+  ia_bce_loss: true
+  postprocess_trace_alpha: 0.2
+
+  gradient_checkpointing: false
+  amp: true
+  compile: false
+  fused_optimizer: true
+  freeze_encoder: false
+  backbone_lora: false
+
+  segmentation_head: false
+  mask_downsample_ratio: 4
+  use_grouppose_keypoints: false
+  num_keypoints_per_class: []
+  keypoint_cross_attn: true
+  inter_instance_kp_attn: false
+  grouppose_keypoint_dim_downscale: 1
+  dual_projector: false
+  dual_projector_kp_only: false
+
+  # Bare filename хранится в RF_HOME (~/.roboflow/models по умолчанию) и
+  # скачивается официальным пакетом. null означает обучение с нуля.
+  pretrain_weights: rf-detr-small.pth

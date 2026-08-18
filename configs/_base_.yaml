@@ -6,15 +6,15 @@ data:
   context_k: 4
   context_strategy: prev_k
   clip_len: 4
-  image_size: 224
+  image_size: 512
   augmentations:
     - random_horizontal_flip
     - color_jitter
 
 detector:
   name: rfdetr
-  variant: base
-  weights: null
+  component_path: models/rfdetr
+  config_path: models/rfdetr/config.yaml
   freeze_backbone: true
   num_queries: 300
   dim: 256

@@ -1,432 +1,322 @@
-"""RF-DETR:  DINOv3 + deformable-декодер (DAB-DETR anchors).
-Бейзлайн без временного контекста. Точки расширения (context_after_backbone/
-context_after_projector/context_before_decoder),
-начинку добавит memory.py.
-"""
+"""Адаптер официальной реализации RF-DETR к модельному контракту проекта."""
 
 from __future__ import annotations
 
-import math
-import os
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from enum import StrEnum
+from importlib import import_module
+from types import ModuleType
+from typing import Any, cast
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from transformers import AutoModel
+from torch import Tensor, nn
+from torch.utils.hooks import RemovableHandle
 
 from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
 from .detector import DetectorAdapter
 
-DINOV3_HF_NAME = "facebook/dinov3-vitb16-pretrain-lvd1689m"
 
-# variant -> HF repo. "base" оставлен дефолтом ради обратной совместимости
-# с текущим ноутбуком, где variant не передавался.
-DINOV3_VARIANTS = {
-    "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
-    "base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
-    "large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-}
+class RFDetrVariant(StrEnum):
+    """Поддерживаемые upstream-варианты детектора."""
 
+    NANO = "nano"
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
 
-def inverse_sigmoid(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
-    x = x.clamp(min=0, max=1)
-    x1 = x.clamp(min=eps)
-    x2 = (1 - x).clamp(min=eps)
-    return torch.log(x1 / x2)
+    @property
+    def upstream_class_name(self) -> str:
+        """Имя публичного класса варианта в пакете :mod:`rfdetr`."""
+        return f"RFDETR{self.value.title()}"
 
 
-class _DINOv3Backbone(nn.Module):
-    """(B,3,H,W) -> (B,embed_dim,H/patch,W/patch)."""
+class _RFDetrForwardCapture:
+    """Подключить адаптер к upstream backbone и decoder на один forward."""
 
-    def __init__(self, hf_name: str = DINOV3_HF_NAME, freeze: bool = False):
-        super().__init__()
-        # Токен только из окружения (huggingface-cli login / HF_TOKEN / Kaggle
-        # secret) — никогда не хардкодить и не класть в конфиг, который может
-        # уйти в git. None здесь безопасен: from_pretrained тогда попробует
-        # уже закешированный логин, если он есть.
-        token = os.environ.get("HF_TOKEN")
-        self.model = AutoModel.from_pretrained(hf_name, token=token)
-        self.patch_size = self.model.config.patch_size
-        self.embed_dim = self.model.config.hidden_size
-        self.num_special_tokens = 1 + getattr(
-            self.model.config, "num_register_tokens", 0
-        )
-        if freeze:
-            for p in self.model.parameters():
-                p.requires_grad = False
+    def __init__(self, model: nn.Module, query_init: Tensor | None) -> None:
+        self.model: nn.Module = model
+        self.query_init: Tensor | None = query_init
+        self.features: list[Tensor] = []
+        self.decoder_queries: Tensor | None = None
+        self._handles: list[RemovableHandle] = []
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
-        B = images.shape[0]
-        h, w = images.shape[-2] // self.patch_size, images.shape[-1] // self.patch_size
-        tokens = self.model(pixel_values=images).last_hidden_state
-        patch_tokens = tokens[
-            :, self.num_special_tokens :, :
-        ]  # без CLS/регистр-токенов
-        return patch_tokens.transpose(1, 2).reshape(B, self.embed_dim, h, w)
+    def install(self) -> None:
+        """Установить временные hooks без изменения исходного RF-DETR."""
+        backbone: nn.Module = _child_module(self.model, "backbone")
+        transformer: nn.Module = _child_module(self.model, "transformer")
+        decoder: nn.Module = _child_module(transformer, "decoder")
+        self._handles = [
+            backbone.register_forward_hook(self._capture_backbone),
+            decoder.register_forward_pre_hook(self._inject_queries),
+            decoder.register_forward_hook(self._capture_decoder),
+        ]
 
+    def remove(self) -> None:
+        """Всегда снять hooks, включая неуспешный upstream forward."""
+        for handle in self._handles:
+            handle.remove()
+        self._handles.clear()
 
-class _MultiScaleProjector(nn.Module):
-    """Одна карта фичей -> n_levels карт убывающего разрешения (stride 1,2,4,...).
-    GroupNorm вместо BatchNorm — не зависит от размера батча."""
+    def require_decoder_queries(self) -> Tensor:
+        """Вернуть decoder states или сообщить о несовместимом upstream API."""
+        if self.decoder_queries is None:
+            raise RuntimeError("RF-DETR decoder не вернул query states")
+        return self.decoder_queries
 
-    def __init__(self, in_dim: int, hidden_dim: int, n_levels: int = 3):
-        super().__init__()
-        self.input_proj = nn.Sequential(
-            nn.Conv2d(in_dim, hidden_dim, kernel_size=1), nn.GroupNorm(32, hidden_dim)
-        )
-        self.downsample = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Conv2d(
-                        hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1
-                    ),
-                    nn.GroupNorm(32, hidden_dim),
-                )
-                for _ in range(n_levels - 1)
-            ]
-        )
-
-    def forward(self, feat: torch.Tensor) -> list[torch.Tensor]:
-        x = self.input_proj(feat)
-        feats = [x]
-        for down in self.downsample:
-            x = down(x)
-            feats.append(x)
-        return feats
-
-
-class _SinePositionEmbedding2D(nn.Module):
-    """Синус-косинусное позиционное кодирование карты (B,C,H,W) -> (B,H*W,C)."""
-
-    def __init__(self, num_pos_feats: int, temperature: int = 10000):
-        super().__init__()
-        assert num_pos_feats % 2 == 0
-        self.num_pos_feats = num_pos_feats // 2
-        self.temperature = temperature
-
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = feat.shape
-        device = feat.device
-        y = (
-            torch.arange(H, dtype=torch.float32, device=device)
-            .unsqueeze(1)
-            .expand(H, W)
-        )
-        x = (
-            torch.arange(W, dtype=torch.float32, device=device)
-            .unsqueeze(0)
-            .expand(H, W)
-        )
-        y = y / (H + 1e-6) * 2 * math.pi
-        x = x / (W + 1e-6) * 2 * math.pi
-        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=device)
-        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
-        pos_x = x[..., None] / dim_t
-        pos_y = y[..., None] / dim_t
-        pos_x = torch.stack(
-            (pos_x[..., 0::2].sin(), pos_x[..., 1::2].cos()), dim=-1
-        ).flatten(-2)
-        pos_y = torch.stack(
-            (pos_y[..., 0::2].sin(), pos_y[..., 1::2].cos()), dim=-1
-        ).flatten(-2)
-        pos = torch.cat([pos_y, pos_x], dim=-1).unsqueeze(0).expand(B, -1, -1, -1)
-        return pos.flatten(1, 2)
-
-
-class _MSDeformAttn(nn.Module):
-    """Multi-scale deformable cross-attention (Deformable DETR)."""
-
-    def __init__(
-        self, d_model: int = 256, n_levels: int = 3, n_heads: int = 8, n_points: int = 4
-    ):
-        super().__init__()
-        assert d_model % n_heads == 0
-        self.n_levels, self.n_heads, self.n_points = n_levels, n_heads, n_points
-        self.head_dim = d_model // n_heads
-        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
-        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
-        self.value_proj = nn.Linear(d_model, d_model)
-        self.output_proj = nn.Linear(d_model, d_model)
-        nn.init.constant_(self.sampling_offsets.weight, 0.0)
-        nn.init.constant_(self.sampling_offsets.bias, 0.0)
-        nn.init.constant_(self.attention_weights.weight, 0.0)
-        nn.init.constant_(self.attention_weights.bias, 0.0)
-        nn.init.xavier_uniform_(self.value_proj.weight)
-        nn.init.constant_(self.value_proj.bias, 0.0)
-        nn.init.xavier_uniform_(self.output_proj.weight)
-        nn.init.constant_(self.output_proj.bias, 0.0)
-
-    def forward(
+    def _capture_backbone(
         self,
-        query: torch.Tensor,
-        reference_points: torch.Tensor,
-        value: torch.Tensor,
-        spatial_shapes: list[tuple[int, int]],
-    ) -> torch.Tensor:
-        """reference_points: (B,Q,2) нормализ. (cx,cy) — центр anchor-бокса."""
-        B, Q, C = query.shape
-        H, P, D, L = self.n_heads, self.n_points, self.head_dim, self.n_levels
-        value = self.value_proj(value).view(B, -1, H, D)
-        value_list = value.split([h * w for h, w in spatial_shapes], dim=1)
+        module: nn.Module,
+        inputs: tuple[object, ...],
+        output: object,
+    ) -> None:
+        del module, inputs
+        self.features = _backbone_feature_tensors(output)
 
-        offsets = self.sampling_offsets(query).view(B, Q, H, L, P, 2)
-        attn = self.attention_weights(query).view(B, Q, H, L * P)
-        attn = F.softmax(attn, dim=-1).view(B, Q, H, L, P)
+    def _inject_queries(
+        self,
+        module: nn.Module,
+        inputs: tuple[object, ...],
+    ) -> tuple[object, ...] | None:
+        del module
+        if self.query_init is None:
+            return None
+        if not inputs or not isinstance(inputs[0], Tensor):
+            raise RuntimeError("неожиданная сигнатура RF-DETR decoder")
 
-        out = query.new_zeros(B, H, D, Q)
-        for lvl, (h, w) in enumerate(spatial_shapes):
-            v = value_list[lvl].permute(0, 2, 3, 1).reshape(B * H, D, h, w)
-            norm = query.new_tensor([w, h])
-            loc = reference_points[:, :, None, None, :] + offsets[:, :, :, lvl] / norm
-            loc = loc.clamp(0.0, 1.0) * 2 - 1
-            loc = loc.permute(0, 2, 1, 3, 4).reshape(B * H, Q, P, 2)
-            sampled = F.grid_sample(
-                v, loc, mode="bilinear", padding_mode="zeros", align_corners=False
+        original: Tensor = inputs[0]
+        query_init: Tensor = self.query_init
+        if query_init.shape != original.shape:
+            raise ValueError(
+                "query_init имеет форму "
+                f"{tuple(query_init.shape)}, ожидалось {tuple(original.shape)}"
             )
-            sampled = sampled.view(B, H, D, Q, P)
-            w_lvl = attn[:, :, :, lvl, :].permute(0, 2, 1, 3)
-            out = out + torch.einsum("bhdqp,bhqp->bhdq", sampled, w_lvl)
-        out = out.permute(0, 3, 1, 2).reshape(B, Q, C)
-        return self.output_proj(out)
+        if query_init.device != original.device or query_init.dtype != original.dtype:
+            raise ValueError(
+                "query_init должен совпадать с RF-DETR queries по device и dtype"
+            )
+        return (query_init.contiguous(), *inputs[1:])
 
-
-def _bbox_mlp(
-    dim_in: int, dim_hidden: int, dim_out: int, num_layers: int = 3
-) -> nn.Sequential:
-    dims = [dim_in] + [dim_hidden] * (num_layers - 1) + [dim_out]
-    layers = []
-    for i in range(num_layers):
-        layers.append(nn.Linear(dims[i], dims[i + 1]))
-        if i < num_layers - 1:
-            layers.append(nn.ReLU(inplace=True))
-    return nn.Sequential(*layers)
-
-
-class _DecoderLayer(nn.Module):
-    def __init__(
-        self, d_model=256, n_heads=8, n_levels=3, n_points=4, d_ffn=1024, dropout=0.1
-    ):
-        super().__init__()
-        self.self_attn = nn.MultiheadAttention(
-            d_model, n_heads, dropout=dropout, batch_first=True
-        )
-        self.norm1 = nn.LayerNorm(d_model)
-        self.cross_attn = _MSDeformAttn(d_model, n_levels, n_heads, n_points)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_ffn),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(d_ffn, d_model),
-        )
-        self.norm3 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, tgt, query_pos, ref_center, memory, spatial_shapes):
-        q = k = tgt + query_pos
-        sa_out, _ = self.self_attn(q, k, tgt)
-        tgt = self.norm1(tgt + self.dropout(sa_out))
-        ca_out = self.cross_attn(tgt + query_pos, ref_center, memory, spatial_shapes)
-        tgt = self.norm2(tgt + self.dropout(ca_out))
-        tgt = self.norm3(tgt + self.dropout(self.ffn(tgt)))
-        return tgt
-
-
-class _DeformableDecoder(nn.Module):
-    """Стек слоёв с итеративным уточнением anchor-боксов (DAB-DETR, cxcywh).
-    Голова класса/бокса на каждом слое — для aux-лосса и честного decoder_layers."""
-
-    def __init__(
+    def _capture_decoder(
         self,
-        d_model=256,
-        n_heads=8,
-        n_levels=3,
-        n_points=4,
-        d_ffn=1024,
-        num_layers=3,
-        num_classes=10,
-        dropout=0.1,
-    ):
-        super().__init__()
-        self.layers = nn.ModuleList(
-            [
-                _DecoderLayer(d_model, n_heads, n_levels, n_points, d_ffn, dropout)
-                for _ in range(num_layers)
-            ]
-        )
-        self.class_heads = nn.ModuleList(
-            [nn.Linear(d_model, num_classes) for _ in range(num_layers)]
-        )
-        self.bbox_heads = nn.ModuleList(
-            [_bbox_mlp(d_model, d_model, 4, 3) for _ in range(num_layers)]
-        )
-        for bh in self.bbox_heads:
-            nn.init.constant_(bh[-1].weight, 0.0)
-            nn.init.constant_(bh[-1].bias, 0.0)
-
-    def forward(self, tgt, query_pos, ref_boxes, memory, spatial_shapes):
-        """ref_boxes: (B,Q,4) начальные anchor-боксы cxcywh.
-        Возвращает per-layer списки logits / boxes / queries."""
-        layer_logits, layer_boxes, layer_queries = [], [], []
-        boxes = ref_boxes
-        for i, layer in enumerate(self.layers):
-            ref_center = boxes[..., :2]
-            tgt = layer(tgt, query_pos, ref_center, memory, spatial_shapes)
-            delta = self.bbox_heads[i](tgt)
-            boxes = (inverse_sigmoid(boxes) + delta).sigmoid()
-            logits = self.class_heads[i](tgt)
-            layer_logits.append(logits)
-            layer_boxes.append(boxes)
-            layer_queries.append(tgt)
-            boxes = boxes.detach()  # без этого градиент течёт через все слои сразу
-        return layer_logits, layer_boxes, layer_queries
+        module: nn.Module,
+        inputs: tuple[object, ...],
+        output: object,
+    ) -> None:
+        del module, inputs
+        if not isinstance(output, tuple) or not output:
+            raise RuntimeError("неожиданный выход RF-DETR decoder")
+        queries: object = output[0]
+        if not isinstance(queries, Tensor):
+            raise RuntimeError("RF-DETR decoder не вернул Tensor queries")
+        self.decoder_queries = queries.unsqueeze(0) if queries.ndim == 3 else queries
 
 
 class RFDetrAdapter(DetectorAdapter):
-    """RF-DETR: DINOv3 ViT-B/16 + multi-scale projector + deformable decoder
-    с DAB-DETR anchor-боксами.
+    """Тонкая голова над официальным пакетом RF-DETR.
 
-    Точка подключения контекста — единственная, что даёт протокол
-    `DetectorAdapter`: `initial_queries` отдаёт query_content наружу,
-    `ContextDetector` читает по нему память и возвращает уже слитые queries
-    в `query_init`. Свои context_after_backbone/after_projector хуки убраны:
-    `ContextDetector` их не вызывает, а не вызываемый код — источник багов,
-    которые не ловятся regression-тестом. Возврат к ним — через отдельный
-    callback между слоями decoder, согласованный с Человеком 1 (см. TODO).
+    Архитектура, веса, backbone, projector, decoder и prediction heads остаются
+    upstream-кодом. Адаптер только подменяет вход decoder при переданном
+    ``query_init`` и преобразует результат в :class:`DetectorOutput`.
     """
 
     def __init__(
         self,
-        variant: str = "base",
+        variant: str,
         weights: str | None = None,
-        config: dict[str, Any] | None = None,
+        *,
+        model_options: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        self.config = config or {}
-        if variant not in DINOV3_VARIANTS:
-            raise ValueError(
-                f"неизвестный variant {variant!r}, есть: {sorted(DINOV3_VARIANTS)}"
-            )
+        self.variant: RFDetrVariant = _parse_variant(variant)
+        upstream: object = self._build_upstream(weights, model_options)
+        model_context: object = getattr(upstream, "model", None)
+        model: object = getattr(model_context, "model", None)
+        model_config: object = getattr(upstream, "model_config", None)
+        if not isinstance(model, nn.Module):
+            raise TypeError("публичный RF-DETR provider не содержит nn.Module")
 
-        self.hidden_dim = self.config.get("hidden_dim", 256)
-        self.n_levels = self.config.get("n_levels", 3)
-        self.num_queries = self.config.get("num_queries", 300)
-        self.num_classes = self.config.get("num_classes", 10)  # BDD100K detection
-
-        self.backbone = _DINOv3Backbone(
-            DINOV3_VARIANTS[variant], freeze=self.config.get("freeze_backbone", False)
-        )
-        self.projector = _MultiScaleProjector(
-            self.backbone.embed_dim, self.hidden_dim, n_levels=self.n_levels
-        )
-        self.pos_embed = _SinePositionEmbedding2D(self.hidden_dim)
-        self.level_embed = nn.Parameter(
-            torch.randn(self.n_levels, self.hidden_dim) * 0.02
-        )
-
-        # content queries и обучаемые anchor-боксы (DAB-DETR)
-        self.query_content = nn.Embedding(self.num_queries, self.hidden_dim)
-        self.query_pos_mlp = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-        )
-        self.anchor_boxes = nn.Parameter(
-            torch.rand(self.num_queries, 4)
-        )  # cxcywh в [0,1]
-
-        self.decoder = _DeformableDecoder(
-            d_model=self.hidden_dim,
-            n_heads=self.config.get("n_heads", 8),
-            n_levels=self.n_levels,
-            n_points=self.config.get("n_points", 4),
-            d_ffn=self.config.get("d_ffn", 1024),
-            num_layers=self.config.get("num_decoder_layers", 3),
-            num_classes=self.num_classes,
-            dropout=self.config.get("dropout", 0.1),
-        )
-
-        if weights is not None:
-            self.load_state_dict(torch.load(weights, map_location="cpu"))
+        hidden_dim: object = getattr(model_config, "hidden_dim", None)
+        num_queries: object = getattr(model_config, "num_queries", None)
+        if not isinstance(hidden_dim, int) or not isinstance(num_queries, int):
+            raise TypeError("RF-DETR model_config не содержит hidden_dim/num_queries")
+        self.model: nn.Module = model
+        self._dim: int = hidden_dim
+        self.num_queries: int = num_queries
 
     @property
     def dim(self) -> int:
-        return self.hidden_dim
+        """Размерность upstream decoder queries."""
+        return self._dim
 
-    def initial_queries(self, batch: DetectionBatch) -> torch.Tensor:
-        b = batch.images.shape[0]
-        return self.query_content.weight.unsqueeze(0).expand(b, -1, -1)
-
-    def encode_context_frames(self, context: ContextBatch) -> list[torch.Tensor] | None:
-        # MeMOT (и остальные рекуррентные ветки) читают MemoryState, а не
-        # пиксели контекстных кадров — ContextModule.needs_context_frames=False
-        # для них, и ContextDetector этот метод вообще не вызывает.
-        return None
-
-    def _flatten_levels(self, feats: list[torch.Tensor]):
-        srcs, poss, shapes = [], [], []
-        for lvl, f in enumerate(feats):
-            H, W = f.shape[-2:]
-            shapes.append((H, W))
-            srcs.append(f.flatten(2).transpose(1, 2))
-            poss.append(self.pos_embed(f) + self.level_embed[lvl].view(1, 1, -1))
-        return torch.cat(srcs, dim=1), torch.cat(poss, dim=1), shapes
-
-    def _anchor_to_pos(self, centers: torch.Tensor) -> torch.Tensor:
-        """(B,Q,2) центры anchor'ов -> (B,Q,hidden_dim) синус-эмбеддинг."""
-        device = centers.device
-        num_pos_feats = self.hidden_dim // 2
-        dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=device)
-        dim_t = 10000 ** (2 * (dim_t // 2) / num_pos_feats)
-        pos = centers[..., None] * 2 * math.pi / dim_t  # (B,Q,2,num_pos_feats)
-        pos = torch.stack((pos[..., 0::2].sin(), pos[..., 1::2].cos()), dim=-1).flatten(
-            -2
-        )
-        return pos.flatten(2)  # (B,Q,hidden_dim)
+    def initial_queries(self, batch: DetectionBatch) -> Tensor:
+        """Повторить обучаемые RF-DETR queries для каждого элемента батча."""
+        query_embedding: nn.Module = _child_module(self.model, "query_feat")
+        if not isinstance(query_embedding, nn.Embedding):
+            raise TypeError("RF-DETR query_feat должен быть nn.Embedding")
+        query_weights: Tensor = query_embedding.weight
+        count: int = query_weights.shape[0] if self.training else self.num_queries
+        return query_weights[:count].unsqueeze(0).expand(batch.batch_size, -1, -1)
 
     def forward(
-        self, batch: DetectionBatch, query_init: torch.Tensor | None = None
+        self, batch: DetectionBatch, query_init: Tensor | None = None
     ) -> DetectorOutput:
-        B = batch.images.shape[0]
+        """Запустить оригинальный forward и привести его к локальному контракту."""
+        capture = _RFDetrForwardCapture(self.model, query_init)
+        capture.install()
+        try:
+            raw_output: object = self.model(batch.images)
+        finally:
+            capture.remove()
 
-        features = self.backbone(batch.images)
-        ms_features = self.projector(features)
-        memory, pos_flat, shapes = self._flatten_levels(ms_features)
-
-        init_boxes = self.anchor_boxes.sigmoid().unsqueeze(0).expand(B, -1, -1)
-        query_pos = self.query_pos_mlp(self._anchor_to_pos(init_boxes[..., :2]))
-
-        # query_init=None -> оригинальный RF-DETR (regression baseline).
-        # Фьюжн с памятью уже сделан снаружи, в ContextDetector.fusion —
-        # здесь его повторять нельзя, иначе память смешивается дважды.
-        queries = self.initial_queries(batch) if query_init is None else query_init
-
-        layer_logits, layer_boxes, layer_queries = self.decoder(
-            queries, query_pos, init_boxes, memory, shapes
+        if not isinstance(raw_output, Mapping):
+            raise TypeError("RF-DETR forward обязан вернуть mapping")
+        predictions: Mapping[str, Any] = cast("Mapping[str, Any]", raw_output)
+        logits: Tensor = _prediction_tensor(predictions, "pred_logits")
+        boxes: Tensor = _prediction_tensor(predictions, "pred_boxes")
+        query_layers: Tensor = capture.require_decoder_queries()
+        decoder_layers: list[dict[str, Tensor]] = _decoder_layers(
+            predictions,
+            query_layers,
+        )
+        queries: Tensor = decoder_layers[-1]["queries"]
+        aux: dict[str, Any] = {
+            key: value
+            for key, value in predictions.items()
+            if key not in {"pred_logits", "pred_boxes", "aux_outputs"}
+        }
+        return DetectorOutput(
+            logits=logits,
+            boxes=boxes,
+            queries=queries,
+            reference_points=boxes,
+            features=capture.features,
+            decoder_layers=decoder_layers,
+            aux=aux,
         )
 
-        decoder_layers = [
-            {"queries": q, "boxes": b, "logits": logit}
-            for q, b, logit in zip(
-                layer_queries, layer_boxes, layer_logits, strict=True
-            )
+    def encode_context_frames(self, context: ContextBatch) -> list[Tensor] | None:
+        """Переиспользовать upstream backbone для пиксельного контекста."""
+        if context.images is None:
+            return None
+        batch_size, num_frames = context.images.shape[:2]
+        if num_frames == 0:
+            return []
+        flat_images: Tensor = context.images.flatten(0, 1)
+        backbone: nn.Module = _child_module(self.model, "backbone")
+        raw_features: object = backbone(flat_images)
+        return [
+            feature.unflatten(0, (batch_size, num_frames))
+            for feature in _backbone_feature_tensors(raw_features)
         ]
 
-        return DetectorOutput(
-            logits=layer_logits[-1],
-            boxes=layer_boxes[-1],
-            queries=layer_queries[-1],
-            reference_points=layer_boxes[-1],
-            features=ms_features,
-            decoder_layers=decoder_layers,
-            aux={},
-        )
-
     def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
-        if backbone:
-            for p in self.backbone.parameters():
-                p.requires_grad = False
-        if decoder:
-            for p in self.decoder.parameters():
-                p.requires_grad = False
+        """Заморозить выбранные upstream-части детектора."""
+        _set_trainable(_child_module(self.model, "backbone"), not backbone)
+        transformer: nn.Module = _child_module(self.model, "transformer")
+        _set_trainable(_child_module(transformer, "decoder"), not decoder)
+
+    def _build_upstream(
+        self,
+        weights: str | None,
+        model_options: Mapping[str, Any] | None,
+    ) -> object:
+        """Создать официальный публичный RF-DETR variant."""
+        package: ModuleType = import_module("rfdetr")
+        provider: object = getattr(
+            package,
+            self.variant.upstream_class_name,
+            None,
+        )
+        if not callable(provider):
+            raise ImportError(
+                f"rfdetr не экспортирует {self.variant.upstream_class_name}"
+            )
+        factory: Callable[..., object] = cast("Callable[..., object]", provider)
+        options: dict[str, Any] = dict(model_options or {})
+        if weights is not None:
+            configured_weights: object = options.get("pretrain_weights")
+            if configured_weights is not None and configured_weights != weights:
+                raise ValueError(
+                    "weights и model_options['pretrain_weights'] задают разные файлы"
+                )
+            options["pretrain_weights"] = weights
+        return factory(**options)
+
+
+def _parse_variant(variant: str) -> RFDetrVariant:
+    normalized: str = variant.strip().lower().removeprefix("rfdetr-")
+    try:
+        return RFDetrVariant(normalized)
+    except ValueError as error:
+        supported: str = ", ".join(item.value for item in RFDetrVariant)
+        raise ValueError(
+            f"неизвестный RF-DETR variant {variant!r}; доступно: {supported}"
+        ) from error
+
+
+def _child_module(owner: nn.Module, name: str) -> nn.Module:
+    child: object = getattr(owner, name, None)
+    if not isinstance(child, nn.Module):
+        raise TypeError(f"RF-DETR {type(owner).__name__}.{name} должен быть nn.Module")
+    return child
+
+
+def _backbone_feature_tensors(output: object) -> list[Tensor]:
+    if not isinstance(output, Sequence) or not output:
+        raise RuntimeError("неожиданный выход RF-DETR backbone")
+    features: object = output[0]
+    if not isinstance(features, Sequence):
+        raise RuntimeError("RF-DETR backbone не вернул multi-scale features")
+
+    tensors: list[Tensor] = []
+    for feature in features:
+        tensor: object = getattr(feature, "tensors", feature)
+        if not isinstance(tensor, Tensor):
+            raise RuntimeError("RF-DETR backbone feature не является Tensor")
+        tensors.append(tensor)
+    return tensors
+
+
+def _prediction_tensor(predictions: Mapping[str, Any], name: str) -> Tensor:
+    value: object = predictions.get(name)
+    if not isinstance(value, Tensor):
+        raise RuntimeError(f"RF-DETR output не содержит Tensor {name!r}")
+    return value
+
+
+def _decoder_layers(
+    predictions: Mapping[str, Any],
+    queries: Tensor,
+) -> list[dict[str, Tensor]]:
+    raw_aux: object = predictions.get("aux_outputs", [])
+    if not isinstance(raw_aux, Sequence):
+        raise RuntimeError("RF-DETR aux_outputs должен быть последовательностью")
+    layer_predictions: list[Mapping[str, Any]] = []
+    for layer in raw_aux:
+        if not isinstance(layer, Mapping):
+            raise RuntimeError("RF-DETR aux layer должен быть mapping")
+        layer_predictions.append(cast("Mapping[str, Any]", layer))
+    layer_predictions.append(predictions)
+
+    if queries.ndim != 4 or queries.shape[0] < len(layer_predictions):
+        raise RuntimeError(
+            "число captured RF-DETR queries не совпадает с prediction layers"
+        )
+    selected_queries: Tensor = queries[-len(layer_predictions) :]
+    return [
+        {
+            "queries": layer_queries,
+            "logits": _prediction_tensor(layer, "pred_logits"),
+            "boxes": _prediction_tensor(layer, "pred_boxes"),
+            "reference_points": _prediction_tensor(layer, "pred_boxes"),
+        }
+        for layer, layer_queries in zip(
+            layer_predictions,
+            selected_queries,
+            strict=True,
+        )
+    ]
+
+
+def _set_trainable(module: nn.Module, trainable: bool) -> None:
+    for parameter in module.parameters():
+        parameter.requires_grad_(trainable)

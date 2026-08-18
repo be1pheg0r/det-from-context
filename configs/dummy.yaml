@@ -12,6 +12,8 @@ data:
   image_size: 64
 detector:
   name: dummy
+  component_path: null
+  config_path: null
   variant: null
   freeze_backbone: false
   num_queries: 20
