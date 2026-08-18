@@ -1,0 +1,4 @@
+name: linear_regression
+in_features: 1
+out_features: 1
+bias: true

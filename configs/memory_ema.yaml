@@ -1,0 +1,8 @@
+defaults:
+  - _base_
+  - _self_
+
+# Milestone 2: MeMOTR-style EMA-слот.
+context:
+  name: ema_slot
+  fusion: gated_residual

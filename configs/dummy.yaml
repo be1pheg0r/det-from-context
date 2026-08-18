@@ -1,0 +1,21 @@
+defaults:
+  - _base_
+  - _self_
+
+# Sanity-прогон без датасета и RF-DETR.
+name: dummy
+data:
+  name: dummy
+  config_path: dataset_configs/dummy.yaml
+  root: null
+  clip_len: 2
+  image_size: 64
+detector:
+  name: dummy
+  variant: null
+  freeze_backbone: false
+  num_queries: 20
+  dim: 32
+  num_heads: 4
+context:
+  name: none

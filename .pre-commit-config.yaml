@@ -1,10 +1,15 @@
 # Установка (один раз на клон):
-#   pip install pre-commit && pre-commit install
+#   pip install -e ".[dev]" && pre-commit install --install-hooks
 # Хуки ставят ruff в собственное окружение — зависимости проекта не нужны.
 #
 # ⚠️ Локальный хук обходится через `git commit --no-verify`. Настоящее
 # принуждение — job `lint` в .github/workflows/ci.yml плюс branch protection
-# на master. Хук здесь для того, чтобы не гонять CI ради опечатки.
+# на develop. Хук здесь для того, чтобы не гонять CI ради опечатки.
+minimum_pre_commit_version: "3.2.0"
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+fail_fast: true
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Должно совпадать с ruff== в pyproject.toml и version в ci.yml.
@@ -25,3 +30,27 @@ repos:
       - id: check-added-large-files
         # Веса RF-DETR и куски датасета в git не кладём.
         args: [--maxkb=1024]
+
+  - repo: local
+    hooks:
+      - id: ruff-check-pre-push
+        name: ruff check (pre-push)
+        entry: python -m ruff check .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: ruff-format-pre-push
+        name: ruff format check (pre-push)
+        entry: python -m ruff format --check .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: pytest-pre-push
+        name: pytest (pre-push)
+        entry: python -m pytest -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -314,17 +314,17 @@ def test_no_context_equals_bare_detector():
 
 
 def test_dummy_config_file_builds():
-    model = build_model(load_config(CONFIG_DIR / "dummy.json"))
+    model = build_model(load_config(CONFIG_DIR / "dummy.yaml"))
     batch, context = make_dummy_batch(batch_size=1, context_k=2, image_size=32)
     output, _ = model(batch, context)
     assert output.logits.shape[0] == 1
 
 
 def test_dummy_config_trains_the_backbone():
-    """configs/dummy.json — точка входа для отладки цикла обучения. Если он
-    унаследует freeze_backbone из _base.json, лосс будет падать за счёт голов,
+    """configs/dummy.yaml — точка входа для отладки цикла обучения. Если он
+    унаследует freeze_backbone из _base_.yaml, лосс будет падать за счёт голов,
     и «сквозной прогон обучается» окажется неправдой."""
-    model = build_model(load_config(CONFIG_DIR / "dummy.json"))
+    model = build_model(load_config(CONFIG_DIR / "dummy.yaml"))
     frozen = [n for n, p in model.named_parameters() if not p.requires_grad]
     assert not frozen, f"на dummy-конфиге заморожено: {frozen}"
 
