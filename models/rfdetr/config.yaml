@@ -1,54 +1,96 @@
+# Идентификатор model component; должен совпадать с detector.name.
 name: rfdetr
+# Публичный upstream-класс: nano | small | medium | large.
 variant: small
 
-# Эти поля передаются напрямую в официальный RFDETRSmall(ModelConfig).
+# Поля ниже передаются напрямую в официальный RFDETRSmall(ModelConfig).
 # Неизвестные ключи и несовместимые значения отклоняет upstream Pydantic-схема.
 model:
+  # Идентификатор vision-transformer backbone.
   encoder: dinov2_windowed_small
+  # Индексы слоёв encoder, чьи feature maps поступают в projector/decoder.
   out_feature_indexes: [3, 6, 9, 12]
+  # Количество transformer-слоёв decoder.
   dec_layers: 3
+  # Строить начальные queries/reference points из encoder proposals.
   two_stage: true
+  # Уровни feature pyramid для decoder cross-attention: P3, P4 и/или P5.
   projector_scale: [P4]
+  # Ширина hidden state, queries и decoder embeddings.
   hidden_dim: 256
+  # Размер стороны одного ViT patch в пикселях.
   patch_size: 16
+  # Число окон attention по каждой пространственной оси backbone.
   num_windows: 2
+  # Количество heads в decoder self-attention.
   sa_nheads: 8
+  # Количество heads в decoder cross-attention.
   ca_nheads: 16
+  # Число deformable sampling points на head и feature level.
   dec_n_points: 2
 
+  # Object queries при inference и в каждой training-группе.
   num_queries: 300
+  # Максимальное число predictions, сохраняемых postprocessor.
   num_select: 300
+  # Число foreground-классов; отдельного background-класса нет.
   num_classes: 31
+  # Дублирующие query groups для ускорения сходимости при training.
   group_detr: 13
+  # Дополнительные register queries decoder, не являющиеся detections.
   num_decoder_registers: 0
 
+  # Квадратное входное разрешение; кратно patch_size * num_windows.
   resolution: 512
+  # Сторона positional-encoding grid в patch tokens.
   positional_encoding_size: 32
+  # Число каналов входного изображения.
   num_channels: 3
 
+  # Использовать reparameterized box coordinates в decoder.
   bbox_reparam: true
+  # Использовать облегчённое уточнение reference points между слоями.
   lite_refpoint_refine: true
+  # Включить layer normalization в decoder/prediction path.
   layer_norm: true
+  # Использовать IoU-aware BCE classification loss.
   ia_bce_loss: true
+  # Вес uncertainty trace при пересчёте score keypoint-моделей.
   postprocess_trace_alpha: 0.2
 
+  # Экономить VRAM, пересчитывая backbone activations на backward.
   gradient_checkpointing: false
+  # Включить automatic mixed precision (bf16/fp16).
   amp: true
+  # Компилировать модель через torch.compile.
   compile: false
+  # Использовать fused optimizer, когда backend его поддерживает.
   fused_optimizer: true
+  # Заморозить encoder средствами upstream training pipeline.
   freeze_encoder: false
+  # Добавить LoRA adapters в backbone вместо полного fine-tuning.
   backbone_lora: false
 
+  # Создать segmentation mask head поверх detection features.
   segmentation_head: false
+  # Во сколько раз уменьшать resolution mask features.
   mask_downsample_ratio: 4
+  # Создать GroupPose keypoint head.
   use_grouppose_keypoints: false
+  # Число keypoints для каждого класса; пусто для detection-only.
   num_keypoints_per_class: []
+  # Разрешить keypoint queries cross-attention к image features.
   keypoint_cross_attn: true
+  # Разрешить attention между keypoints разных instances.
   inter_instance_kp_attn: false
+  # Коэффициент уменьшения hidden dimension keypoint-ветки.
   grouppose_keypoint_dim_downscale: 1
+  # Использовать отдельные projectors для detection и keypoints.
   dual_projector: false
+  # Применять второй projector только к keypoint-ветке.
   dual_projector_kp_only: false
 
   # Bare filename хранится в RF_HOME (~/.roboflow/models по умолчанию) и
-  # скачивается официальным пакетом. null означает обучение с нуля.
+  # скачивается официальным пакетом. null означает обучение с нуля. Для своего
+  # checkpoint используйте путь относительно компонента: artifacts/model.pth.
   pretrain_weights: rf-detr-small.pth
