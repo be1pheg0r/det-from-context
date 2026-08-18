@@ -5,6 +5,9 @@ defaults:
 # MeMOT: short/long-term temporal memory with recurrent DMAT aggregation.
 data:
   clip_len: 8
+detector:
+  # Temporal slots map one-to-one to RF-DETR queries during training.
+  group_detr: 1
 context:
   name: memot
   fusion: gated_residual

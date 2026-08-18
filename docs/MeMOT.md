@@ -58,14 +58,14 @@ for batch, context in ordered_video_stream:
 
 ```mermaid
 flowchart LR
-    A[DetectionBatch] --> B[detector.initial_queries]
+    A[DetectionBatch] --> B[RF-DETR backbone and encoder]
+    B --> Q[Decoder queries and encoder anchors]
     S[MeMOTState t-1] --> C[Memory read]
     X[ContextBatch] --> C
-    B --> C
+    Q --> C
     C -->|query_delta| D[Fusion]
-    B --> D
+    Q --> D
     D --> E[DETR decoder and heads]
-    A --> E
     E --> F[Association and write]
     C -->|updated DMAT| F
     A -->|timestamp| F
@@ -75,12 +75,13 @@ flowchart LR
 `ContextDetector.forward` выполняет следующие шаги:
 
 1. Сбрасывает строки памяти, помеченные `is_sequence_start`.
-2. Получает начальные object queries детектора.
-3. Читает MeMOT-память и получает `query_delta`.
-4. Смешивает исходные queries и delta выбранным `Fusion`.
-5. Запускает decoder и detection heads.
-6. Сопоставляет уверенные предсказания с track slots и обновляет память.
-7. По умолчанию делает `state.detach()`, ограничивая BPTT одним кадром.
+2. RF-DETR строит encoder proposals и доходит до входа decoder.
+3. Память получает фактические decoder queries и encoder reference points.
+4. Читает MeMOT-память и получает `query_delta`.
+5. Смешивает содержимое queries и delta, не меняя reference points.
+6. Запускает decoder и detection heads.
+7. Сопоставляет уверенные предсказания с track slots и обновляет память.
+8. По умолчанию делает `state.detach()`, ограничивая BPTT одним кадром.
 
 Первый кадр читается как baseline: пока состояние отсутствует, `query_delta`
 точно равен нулю.
@@ -227,10 +228,19 @@ class MyDetrAdapter(DetectorAdapter):
         self,
         batch: DetectionBatch,
         query_init: Tensor | None = None,
+        *,
+        query_transform=None,
     ) -> DetectorOutput:
         feature_levels = list(self.model.backbone(batch.images))
         queries = self.initial_queries(batch) if query_init is None else query_init
-        decoder_layers = self.model.decode(feature_levels, queries)
+        reference_points = self.model.initial_reference_points(feature_levels)
+        if query_transform is not None:
+            queries = query_transform(queries, reference_points)
+        decoder_layers = self.model.decode(
+            feature_levels,
+            queries,
+            reference_points,
+        )
         final_queries = decoder_layers[-1]
         logits = self.model.class_head(final_queries)
         boxes = self.model.box_head(final_queries).sigmoid()
@@ -239,7 +249,7 @@ class MyDetrAdapter(DetectorAdapter):
             logits=logits,
             boxes=boxes,
             queries=final_queries,
-            reference_points=boxes.detach(),
+            reference_points=reference_points,
             features=feature_levels,
             decoder_layers=[{"queries": layer} for layer in decoder_layers],
         )
@@ -254,12 +264,15 @@ class MyDetrAdapter(DetectorAdapter):
 Это каркас: названия методов backbone/decoder/heads нужно заменить API
 конкретной модели.
 
-### Требования к `initial_queries`
+### Требования к подключению queries
 
 - Результат имеет форму `[B, N, D]`.
 - `D` совпадает с `adapter.dim` и `MeMOTMemory.dim`.
-- Переданный в `forward(query_init=...)` тензор действительно должен стать
-  входом decoder. Нельзя молча проигнорировать его и создать queries заново.
+- `query_transform(queries, reference_points)` вызывается ровно один раз,
+  непосредственно перед decoder.
+- Callback меняет содержимое queries, но не reference points encoder.
+- Переданный в `forward(query_init=...)` тензор остаётся поддерживаемым ручным
+  override и действительно должен стать входом decoder.
 - `forward(query_init=None)` должен воспроизводить исходный DETR baseline.
 
 Для DETR с learned object queries реализация обычно сводится к `Embedding`
@@ -267,32 +280,17 @@ class MyDetrAdapter(DetectorAdapter):
 
 ### Two-stage DETR
 
-В two-stage моделях initial queries часто выбираются из выхода encoder. Если
-`initial_queries` самостоятельно запустит backbone/encoder, а `forward` затем
-повторит вычисления, стоимость детектора почти удвоится.
+В two-stage моделях queries и anchors зависят от выхода encoder. Поэтому
+`ContextDetector` не вызывает `initial_queries` заранее: адаптер запускает
+обычный upstream forward и вызывает `query_transform` там, где уже выбраны
+encoder proposals, но decoder ещё не начал работу. Это не дублирует encoder и
+не требует mutable-кэша между вызовами. RF-DETR adapter реализует границу
+временным hook без изменений исходного пакета.
 
-В текущем контракте адаптеру нужен одношаговый кэш подготовленных features:
-
-```python
-def initial_queries(self, batch: DetectionBatch) -> Tensor:
-    features = self.model.backbone(batch.images)
-    encoded = self.model.encoder(features)
-    queries, reference_points = self.model.select_proposals(encoded)
-    self._prepared = (features, encoded, reference_points)
-    return queries
-
-def forward(self, batch, query_init=None) -> DetectorOutput:
-    features, encoded, reference_points = self._prepared
-    self._prepared = None
-    queries = self.initial_queries(batch) if query_init is None else query_init
-    # Decoder использует уже вычисленные encoded/features.
-    ...
-```
-
-Такой кэш должен очищаться после каждого `forward` и не подходит для
-re-entrant/concurrent вызовов одного экземпляра адаптера. Для параллельного
-serving лучше расширить протокол отдельным объектом `PreparedDetectorInput`, а
-не хранить mutable cache на модуле.
+При RF-DETR + MeMOT используется `group_detr=1`. Иначе во время обучения один
+кадр содержит несколько дублирующих групп queries, которым невозможно
+однозначно сопоставить temporal slots следующего кадра. Обычный RF-DETR
+baseline может продолжать использовать группированное обучение.
 
 ### Требования к `DetectorOutput`
 
@@ -427,7 +425,7 @@ model = build_model(config)
 - На первом кадре нулевой delta ожидаем.
 - Проверьте `context.valid_mask`: полностью пустая строка отключает чтение.
 - Проверьте `active_slots` и `write_rate`.
-- Убедитесь, что адаптер использует `query_init` в decoder.
+- Убедитесь, что адаптер вызывает `query_transform` перед decoder.
 - Слишком высокий `write_threshold` не создаёт slots.
 
 ### Все queries записываются как объекты

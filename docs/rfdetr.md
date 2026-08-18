@@ -97,9 +97,17 @@ upstream preprocessing внутри модели, чтобы training transforms
 
 Без контекста adapter вызывает исходный forward без изменения queries, поэтому
 logits и boxes совпадают с upstream-моделью. Для context-веток временный PyTorch
-hook подменяет только вход decoder на batch-specific `query_init`; backbone,
-projector, decoder и heads продолжают исполняться кодом RF-DETR. Hooks снимаются
+hook вызывает `query_transform` непосредственно на входе decoder. Callback
+получает реальные batch-specific queries и reference points, выбранные
+two-stage encoder. Меняется только содержимое queries; encoder anchors,
+backbone, projector, decoder и heads остаются upstream RF-DETR. Hooks снимаются
 после каждого forward, в том числе при исключении.
+
+У RF-DETR `group_detr` применяется только при обучении. Обычный baseline
+сохраняет значение component config (`13`), а `configs/memory_memot.yaml`
+переопределяет его в `1`: временные slots должны однозначно соответствовать
+одному набору из 300 queries между кадрами. Decoder register tokens для MeMOT
+пока запрещены по той же причине.
 
 `DetectorOutput` содержит:
 
@@ -109,5 +117,6 @@ projector, decoder и heads продолжают исполняться кодо
 - остальные upstream outputs в `aux`.
 
 Лёгкие contract-тесты используют структурный stand-in upstream-модуля и не
-скачивают веса. Они проверяют baseline-эквивалентность, подмену queries,
-кодирование context frames, freeze и загрузку directory provider.
+скачивают веса. Они проверяют baseline-эквивалентность, decoder-boundary
+transform с сохранением encoder reference points, два последовательных кадра
+RF-DETR + MeMOT, backward, кодирование context frames, freeze и provider.

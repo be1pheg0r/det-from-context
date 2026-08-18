@@ -78,6 +78,20 @@ class RFDetrProtocol:
         options: dict[str, Any],
     ) -> dict[str, Any]:
         resolved: dict[str, Any] = dict(options)
+        if config.detector.group_detr is not None:
+            resolved["group_detr"] = config.detector.group_detr
+        if config.detector.num_decoder_registers is not None:
+            resolved["num_decoder_registers"] = config.detector.num_decoder_registers
+        if config.context.name == "memot":
+            if resolved.get("group_detr") != 1:
+                raise ValueError(
+                    "MeMOT требует RF-DETR group_detr=1: temporal memory "
+                    "сопоставляет один стабильный набор queries между кадрами"
+                )
+            if resolved.get("num_decoder_registers", 0) != 0:
+                raise ValueError(
+                    "MeMOT пока не поддерживает RF-DETR decoder register tokens"
+                )
         weights: object = resolved.get("pretrain_weights")
         if weights is None:
             return resolved

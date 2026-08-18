@@ -12,7 +12,11 @@ from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 
 from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
-from .detector import DetectorAdapter
+from .detector import (
+    DetectorAdapter,
+    QueryTransform,
+    apply_query_transform,
+)
 
 
 class RFDetrVariant(StrEnum):
@@ -32,11 +36,21 @@ class RFDetrVariant(StrEnum):
 class _RFDetrForwardCapture:
     """Подключить адаптер к upstream backbone и decoder на один forward."""
 
-    def __init__(self, model: nn.Module, query_init: Tensor | None) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        query_init: Tensor | None,
+        query_transform: QueryTransform | None,
+        *,
+        bbox_reparam: bool,
+    ) -> None:
         self.model: nn.Module = model
         self.query_init: Tensor | None = query_init
+        self.query_transform: QueryTransform | None = query_transform
+        self.bbox_reparam: bool = bbox_reparam
         self.features: list[Tensor] = []
         self.decoder_queries: Tensor | None = None
+        self.decoder_reference_points: Tensor | None = None
         self._handles: list[RemovableHandle] = []
 
     def install(self) -> None:
@@ -46,7 +60,7 @@ class _RFDetrForwardCapture:
         decoder: nn.Module = _child_module(transformer, "decoder")
         self._handles = [
             backbone.register_forward_hook(self._capture_backbone),
-            decoder.register_forward_pre_hook(self._inject_queries),
+            decoder.register_forward_pre_hook(self._inject_queries, with_kwargs=True),
             decoder.register_forward_hook(self._capture_decoder),
         ]
 
@@ -62,6 +76,12 @@ class _RFDetrForwardCapture:
             raise RuntimeError("RF-DETR decoder не вернул query states")
         return self.decoder_queries
 
+    def require_decoder_reference_points(self) -> Tensor:
+        """Вернуть реальные decoder anchors в нормализованных координатах."""
+        if self.decoder_reference_points is None:
+            raise RuntimeError("RF-DETR decoder не вернул reference points")
+        return self.decoder_reference_points
+
     def _capture_backbone(
         self,
         module: nn.Module,
@@ -75,25 +95,37 @@ class _RFDetrForwardCapture:
         self,
         module: nn.Module,
         inputs: tuple[object, ...],
-    ) -> tuple[object, ...] | None:
+        kwargs: dict[str, object],
+    ) -> tuple[tuple[object, ...], dict[str, object]] | None:
         del module
-        if self.query_init is None:
+        if self.query_init is None and self.query_transform is None:
             return None
         if not inputs or not isinstance(inputs[0], Tensor):
             raise RuntimeError("неожиданная сигнатура RF-DETR decoder")
 
         original: Tensor = inputs[0]
-        query_init: Tensor = self.query_init
-        if query_init.shape != original.shape:
-            raise ValueError(
-                "query_init имеет форму "
-                f"{tuple(query_init.shape)}, ожидалось {tuple(original.shape)}"
+        raw_references: object = kwargs.get("refpoints_unsigmoid")
+        if not isinstance(raw_references, Tensor):
+            raise RuntimeError("RF-DETR decoder не получил Tensor refpoints_unsigmoid")
+        references: Tensor = self._normalize_references(raw_references)
+        if references.shape != (*original.shape[:2], 4):
+            raise RuntimeError(
+                "RF-DETR decoder reference points имеют форму "
+                f"{tuple(references.shape)}, ожидалось {(*original.shape[:2], 4)}"
             )
-        if query_init.device != original.device or query_init.dtype != original.dtype:
-            raise ValueError(
-                "query_init должен совпадать с RF-DETR queries по device и dtype"
+        replacement: Tensor
+        if self.query_init is not None:
+            replacement = self.query_init
+            replacement = apply_query_transform(
+                original, references, lambda *_: replacement
             )
-        return (query_init.contiguous(), *inputs[1:])
+        else:
+            replacement = apply_query_transform(
+                original,
+                references,
+                self.query_transform,
+            )
+        return ((replacement.contiguous(), *inputs[1:]), kwargs)
 
     def _capture_decoder(
         self,
@@ -105,17 +137,25 @@ class _RFDetrForwardCapture:
         if not isinstance(output, tuple) or not output:
             raise RuntimeError("неожиданный выход RF-DETR decoder")
         queries: object = output[0]
-        if not isinstance(queries, Tensor):
-            raise RuntimeError("RF-DETR decoder не вернул Tensor queries")
+        references: object = output[1] if len(output) > 1 else None
+        if not isinstance(queries, Tensor) or not isinstance(references, Tensor):
+            raise RuntimeError("RF-DETR decoder не вернул Tensor queries/references")
         self.decoder_queries = queries.unsqueeze(0) if queries.ndim == 3 else queries
+        normalized: Tensor = self._normalize_references(references)
+        self.decoder_reference_points = (
+            normalized.unsqueeze(0) if normalized.ndim == 3 else normalized
+        )
+
+    def _normalize_references(self, references: Tensor) -> Tensor:
+        return references if self.bbox_reparam else references.sigmoid()
 
 
 class RFDetrAdapter(DetectorAdapter):
     """Тонкая голова над официальным пакетом RF-DETR.
 
     Архитектура, веса, backbone, projector, decoder и prediction heads остаются
-    upstream-кодом. Адаптер только подменяет вход decoder при переданном
-    ``query_init`` и преобразует результат в :class:`DetectorOutput`.
+    upstream-кодом. Адаптер только применяет transform к содержимому queries
+    на входе decoder и преобразует результат в :class:`DetectorOutput`.
     """
 
     def __init__(
@@ -141,6 +181,7 @@ class RFDetrAdapter(DetectorAdapter):
         self.model: nn.Module = model
         self._dim: int = hidden_dim
         self.num_queries: int = num_queries
+        self.bbox_reparam: bool = bool(getattr(model, "bbox_reparam", False))
 
     @property
     def dim(self) -> int:
@@ -157,10 +198,21 @@ class RFDetrAdapter(DetectorAdapter):
         return query_weights[:count].unsqueeze(0).expand(batch.batch_size, -1, -1)
 
     def forward(
-        self, batch: DetectionBatch, query_init: Tensor | None = None
+        self,
+        batch: DetectionBatch,
+        query_init: Tensor | None = None,
+        *,
+        query_transform: QueryTransform | None = None,
     ) -> DetectorOutput:
         """Запустить оригинальный forward и привести его к локальному контракту."""
-        capture = _RFDetrForwardCapture(self.model, query_init)
+        if query_init is not None and query_transform is not None:
+            raise ValueError("query_init and query_transform are mutually exclusive")
+        capture = _RFDetrForwardCapture(
+            self.model,
+            query_init,
+            query_transform,
+            bbox_reparam=self.bbox_reparam,
+        )
         capture.install()
         try:
             raw_output: object = self.model(batch.images)
@@ -173,9 +225,11 @@ class RFDetrAdapter(DetectorAdapter):
         logits: Tensor = _prediction_tensor(predictions, "pred_logits")
         boxes: Tensor = _prediction_tensor(predictions, "pred_boxes")
         query_layers: Tensor = capture.require_decoder_queries()
+        reference_layers: Tensor = capture.require_decoder_reference_points()
         decoder_layers: list[dict[str, Tensor]] = _decoder_layers(
             predictions,
             query_layers,
+            reference_layers,
         )
         queries: Tensor = decoder_layers[-1]["queries"]
         aux: dict[str, Any] = {
@@ -187,7 +241,7 @@ class RFDetrAdapter(DetectorAdapter):
             logits=logits,
             boxes=boxes,
             queries=queries,
-            reference_points=boxes,
+            reference_points=decoder_layers[-1]["reference_points"],
             features=capture.features,
             decoder_layers=decoder_layers,
             aux=aux,
@@ -202,7 +256,19 @@ class RFDetrAdapter(DetectorAdapter):
             return []
         flat_images: Tensor = context.images.flatten(0, 1)
         backbone: nn.Module = _child_module(self.model, "backbone")
-        raw_features: object = backbone(flat_images)
+        tensor_utilities: ModuleType = import_module("rfdetr.utilities.tensors")
+        nested_factory: object = getattr(
+            tensor_utilities,
+            "nested_tensor_from_tensor_list",
+            None,
+        )
+        if not callable(nested_factory):
+            raise ImportError(
+                "rfdetr.utilities.tensors не экспортирует "
+                "nested_tensor_from_tensor_list"
+            )
+        nested_context: object = nested_factory(list(flat_images))
+        raw_features: object = backbone(nested_context)
         return [
             feature.unflatten(0, (batch_size, num_frames))
             for feature in _backbone_feature_tensors(raw_features)
@@ -286,6 +352,7 @@ def _prediction_tensor(predictions: Mapping[str, Any], name: str) -> Tensor:
 def _decoder_layers(
     predictions: Mapping[str, Any],
     queries: Tensor,
+    references: Tensor,
 ) -> list[dict[str, Tensor]]:
     raw_aux: object = predictions.get("aux_outputs", [])
     if not isinstance(raw_aux, Sequence):
@@ -302,16 +369,32 @@ def _decoder_layers(
             "число captured RF-DETR queries не совпадает с prediction layers"
         )
     selected_queries: Tensor = queries[-len(layer_predictions) :]
+    if references.ndim != 4:
+        raise RuntimeError("captured RF-DETR reference points должны иметь 4 измерения")
+    if references.shape[0] == 1:
+        selected_references: Tensor = references.expand(
+            len(layer_predictions),
+            -1,
+            -1,
+            -1,
+        )
+    elif references.shape[0] >= len(layer_predictions):
+        selected_references = references[-len(layer_predictions) :]
+    else:
+        raise RuntimeError(
+            "число captured RF-DETR reference points не совпадает с prediction layers"
+        )
     return [
         {
             "queries": layer_queries,
             "logits": _prediction_tensor(layer, "pred_logits"),
             "boxes": _prediction_tensor(layer, "pred_boxes"),
-            "reference_points": _prediction_tensor(layer, "pred_boxes"),
+            "reference_points": layer_references,
         }
-        for layer, layer_queries in zip(
+        for layer, layer_queries, layer_references in zip(
             layer_predictions,
             selected_queries,
+            selected_references,
             strict=True,
         )
     ]

@@ -1,29 +1,50 @@
 """Интерфейс детектора и dummy-реализация. Человек 1.
 
-Протокол согласован так, чтобы контекст подключался снаружи, без правки кода
-адаптера: детектор отдаёт начальные queries, кто-то другой их модифицирует,
-детектор доводит forward до конца.
+Протокол согласован так, чтобы контекст подключался снаружи, без форка базового
+детектора: адаптер вызывает callback на реальных queries у границы decoder и
+затем доводит forward до конца.
 """
 
 from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 import torch
 from torch import Tensor, nn
 
 from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
 
+QueryTransform = Callable[[Tensor, Tensor | None], Tensor]
+
+
+def apply_query_transform(
+    queries: Tensor,
+    reference_points: Tensor | None,
+    transform: QueryTransform | None,
+) -> Tensor:
+    """Apply a decoder-boundary query transform and preserve its contract."""
+    if transform is None:
+        return queries
+    transformed: Tensor = transform(queries, reference_points)
+    if transformed.shape != queries.shape:
+        raise ValueError(
+            "query transform returned shape "
+            f"{tuple(transformed.shape)}, expected {tuple(queries.shape)}"
+        )
+    if transformed.device != queries.device or transformed.dtype != queries.dtype:
+        raise ValueError("query transform must preserve decoder query device and dtype")
+    return transformed
+
 
 class DetectorAdapter(nn.Module, ABC):
     """Детектор, из которого вытащены точки подключения контекста.
 
-    Почему `initial_queries` вынесен отдельным методом: memory-модуль должен
-    прочитать память ДО декодирования, а ключом чтения служат текущие queries.
-    Если бы queries рождались только внутри forward, единственным способом
-    добраться до них был бы хук или форк кода детектора — то самое, чего мы
-    хотим избежать.
+    ``query_transform`` — основная точка подключения памяти. Она работает и с
+    two-stage detector, где queries/reference points становятся известны лишь
+    после encoder. ``initial_queries`` остаётся для явного ручного override и
+    простых learned-query detector.
     """
 
     @abstractmethod
@@ -32,10 +53,15 @@ class DetectorAdapter(nn.Module, ABC):
 
     @abstractmethod
     def forward(
-        self, batch: DetectionBatch, query_init: Tensor | None = None
+        self,
+        batch: DetectionBatch,
+        query_init: Tensor | None = None,
+        *,
+        query_transform: QueryTransform | None = None,
     ) -> DetectorOutput:
         """query_init=None должно быть строго эквивалентно оригинальному
-        детектору. Это проверяется regression-тестом Человека 3."""
+        детектору. ``query_transform`` вызывается на реальных queries прямо
+        перед decoder и сохраняет two-stage encoder reference points."""
 
     def encode_context_frames(self, context: ContextBatch) -> list[Tensor] | None:
         """Прогнать контекстные кадры через backbone/projector.
@@ -122,13 +148,24 @@ class DummyDetector(DetectorAdapter):
         return self.query_embed.weight.unsqueeze(0).expand(b, -1, -1)
 
     def forward(
-        self, batch: DetectionBatch, query_init: Tensor | None = None
+        self,
+        batch: DetectionBatch,
+        query_init: Tensor | None = None,
+        *,
+        query_transform: QueryTransform | None = None,
     ) -> DetectorOutput:
+        if query_init is not None and query_transform is not None:
+            raise ValueError("query_init and query_transform are mutually exclusive")
         features = self._features(batch.images)
         # Плоская память для cross-attention: конкатенация всех масштабов.
         memory = torch.cat([f.flatten(2).transpose(1, 2) for f in features], dim=1)
 
         queries = self.initial_queries(batch) if query_init is None else query_init
+        queries = apply_query_transform(
+            queries,
+            self.ref_point_head(queries).sigmoid(),
+            query_transform,
+        )
         layers: list[dict[str, Tensor]] = []
         for attn, norm in zip(self.decoder, self.decoder_norm, strict=True):
             delta, _ = attn(queries, memory, memory, need_weights=False)

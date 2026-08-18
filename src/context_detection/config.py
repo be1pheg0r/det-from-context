@@ -86,6 +86,8 @@ class DetectorConfig(_Section):
     num_classes: int = Field(31, gt=0)
     num_heads: int = Field(4, gt=0)
     num_decoder_layers: int = Field(2, gt=0)
+    group_detr: int | None = Field(None, gt=0)
+    num_decoder_registers: int | None = Field(None, ge=0)
 
     @model_validator(mode="after")
     def _check(self) -> DetectorConfig:

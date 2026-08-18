@@ -39,6 +39,7 @@ class ContextModule(nn.Module, ABC):
         state: MemoryState | None,
         context: ContextBatch,
         encoded_context: list[Tensor] | None = None,
+        query_reference_points: Tensor | None = None,
         current_timestamp: Tensor | None = None,
     ) -> ContextOutput:
         """Прочитать контекст ключом `queries` [B, N, D].
@@ -48,6 +49,7 @@ class ContextModule(nn.Module, ABC):
         пропагация слепая).
 
         Args:
+            query_reference_points: Encoder/decoder anchors ``[B, N, 4]``.
             current_timestamp: Время текущего DetectionBatch в секундах.
         """
 
@@ -99,8 +101,10 @@ class NoContext(ContextModule):
         state: MemoryState | None,
         context: ContextBatch,
         encoded_context: list[Tensor] | None = None,
+        query_reference_points: Tensor | None = None,
         current_timestamp: Tensor | None = None,
     ) -> ContextOutput:
+        del query_reference_points
         return ContextOutput(query_delta=None, memory_state=None)
 
     def write(
@@ -499,10 +503,23 @@ class MeMOTMemory(ContextModule):
         state: MemoryState | None,
         context: ContextBatch,
         encoded_context: list[Tensor] | None = None,
+        query_reference_points: Tensor | None = None,
         current_timestamp: Tensor | None = None,
     ) -> ContextOutput:
         """Агрегировать short/long history и прочитать track tokens queries."""
         batch_size: int = queries.shape[0]
+        if query_reference_points is not None:
+            expected_shape: tuple[int, int, int] = (*queries.shape[:2], 4)
+            if query_reference_points.shape != expected_shape:
+                raise ValueError(
+                    "query_reference_points имеет форму "
+                    f"{tuple(query_reference_points.shape)}, "
+                    f"ожидалось {expected_shape}"
+                )
+            if query_reference_points.device != queries.device:
+                raise ValueError(
+                    "query_reference_points и queries находятся на разных device"
+                )
         if state is None:
             empty_weights: Tensor = queries.new_zeros(
                 batch_size, queries.shape[1], self.num_slots

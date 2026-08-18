@@ -9,7 +9,13 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from ..contracts import ContextBatch, DetectionBatch, DetectorOutput, MemoryState
+from ..contracts import (
+    ContextBatch,
+    ContextOutput,
+    DetectionBatch,
+    DetectorOutput,
+    MemoryState,
+)
 from ..registry import FUSION_MODES, FusionMode
 from .detector import DetectorAdapter
 from .memory import ContextModule
@@ -61,9 +67,9 @@ class ContextDetector(nn.Module):
     Порядок на кадре:
       1. reset памяти по batch.is_sequence_start
       2. encode_context_frames — только если ветка этого требует
-      3. context.read  — ключ чтения: начальные queries детектора
-      4. fusion
-      5. detector.forward с уже слитыми queries
+      3. detector доходит до границы decoder с реальными queries/anchors
+      4. context.read и fusion выполняются callback-ом на этой границе
+      5. decoder продолжает работу с изменённым содержимым queries
       6. context.write — обновление состояния
       7. state.detach() — обрыв BPTT между шагами клипа
 
@@ -104,15 +110,28 @@ class ContextDetector(nn.Module):
         if self.context_module.needs_context_frames:
             encoded = self.detector.encode_context_frames(context)
 
-        queries = self.detector.initial_queries(batch)
-        ctx = self.context_module.read(
-            queries,
-            state,
-            context,
-            encoded,
-            current_timestamp=batch.timestamp,
-        )
-        output = self.detector(batch, query_init=self.fusion(queries, ctx.query_delta))
+        ctx: ContextOutput | None = None
+
+        def apply_context(
+            queries: Tensor,
+            reference_points: Tensor | None,
+        ) -> Tensor:
+            nonlocal ctx
+            if ctx is not None:
+                raise RuntimeError("detector called query_transform more than once")
+            ctx = self.context_module.read(
+                queries,
+                state,
+                context,
+                encoded,
+                query_reference_points=reference_points,
+                current_timestamp=batch.timestamp,
+            )
+            return self.fusion(queries, ctx.query_delta)
+
+        output = self.detector(batch, query_transform=apply_context)
+        if ctx is None:
+            raise RuntimeError("detector did not call query_transform before decoder")
 
         state = self.context_module.write(
             ctx.memory_state if ctx.memory_state is not None else state,
