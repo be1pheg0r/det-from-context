@@ -14,10 +14,13 @@ from pathlib import Path
 # ========================= НАСТРОЙКИ =========================
 
 VIDEOS_DIR = Path(
-    r"bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
+    "/job/s3/bt17f0k57rfieh8/bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
 )  # папка с видео
-JSON_DIR = Path(r"100k/test")  # папка с json-разметкой
-OUT_JSON_DIR = Path(r"out/labels3")  # куда сохранять json по каждому кадру
+JSON_DIR = Path("/job/s3/bt17f0k57rfieh8/bdd100k_downloads/100k/test")
+
+# папка с json-разметкой
+OUT_JSON_DIR = Path("/job/s3/bt17f0k57rfieh8/bdd100k_downloads/labels/test")
+# куда сохранять json по каждому кадру
 
 VIDEO_EXTS = [".mp4", ".avi", ".mov", ".mkv", ".webm"]
 # ===============================================================
