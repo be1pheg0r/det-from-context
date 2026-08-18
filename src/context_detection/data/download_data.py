@@ -111,31 +111,31 @@ CACHE_DIR = os.path.join(".cache")
 USE_INDEX_CACHE = True  # поставьте False, чтобы всегда читать оглавление заново
 
 DOWNLOAD_PLAN = {
-    "VIDEOS_TRAIN": {
-        "mode": "partial",
-        "extensions": None,
-        "name_glob": "*train/*",
-        "max_files": None,
-        "max_total_gb": 60,
+    #"VIDEOS_TRAIN": {
+    #    "mode": "partial",
+    #    "extensions": None,
+    #    "name_glob": "*train/*",
+    #    "max_files": None,
+    #    "max_total_gb": 60,
+    #},
+    #"VIDEOS_TEST": {
+    #    "mode": "partial",
+    #    "extensions": None,
+    #    "name_glob": "*test/*",
+    #    "max_files": None,
+    #    "max_total_gb": 20,
+    #},
+    #"VIDEOS_VAL": {
+    #    "mode": "partial",
+    #    "extensions": None,
+    #    "name_glob": "*val/*",
+    #    "max_files": None,
+    #    "max_total_gb": 10,
+    #},
+    "LABELS": {
+        "mode": "stream",
+        "limit_gb": 100,
     },
-    "VIDEOS_TEST": {
-        "mode": "partial",
-        "extensions": None,
-        "name_glob": "*test/*",
-        "max_files": None,
-        "max_total_gb": 20,
-    },
-    "VIDEOS_VAL": {
-        "mode": "partial",
-        "extensions": None,
-        "name_glob": "*val/*",
-        "max_files": None,
-        "max_total_gb": 10,
-    },
-    # "LABELS": {
-    #     "mode": "stream",
-    #     "limit_gb": 100,
-    # },
 }
 
 # ---------------------------------------------------------------------------

@@ -72,8 +72,8 @@ class VideoDataset(Dataset):
             ".mov",
             ".mkv",
         }
-
-        for video_path in sorted(self.videos_dir.iterdir()):
+        from tqdm import tqdm
+        for video_path in tqdm(sorted(self.videos_dir.iterdir())):
             if video_path.suffix.lower() not in video_extensions:
                 continue
 
