@@ -1,0 +1,9 @@
+defaults:
+  - _base_
+  - _self_
+
+# Память хранит прошлые предсказания о будущем, retrieval — по целевому времени.
+context:
+  name: bridge_ad
+  fusion: gated_residual
+  horizon: 4

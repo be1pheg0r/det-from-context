@@ -6,17 +6,18 @@
 
 from __future__ import annotations
 
-import json
 import pathlib
 
 import pytest
+from hydra.errors import ConfigCompositionException
+from omegaconf import OmegaConf
 from pydantic import ValidationError
 
 from context_detection import registry
 from context_detection.config import ExperimentConfig, load_config
 
 CONFIG_DIR = pathlib.Path(__file__).parent.parent / "configs"
-CONFIGS = sorted(p for p in CONFIG_DIR.glob("*.json") if not p.name.startswith("_"))
+CONFIGS = sorted(p for p in CONFIG_DIR.glob("*.yaml") if not p.name.startswith("_"))
 
 #: Путь к датасету машинный, в репозитории его нет. Конфиги хранят root=null,
 #: и это не заглушка — валидатор обязан ронять конфиг без root (см.
@@ -30,7 +31,7 @@ def test_configs_found():
 
 
 def test_every_config_loads():
-    """Раскрытие _base_ + валидация. Ловит опечатку в имени ветки и лишний
+    """Hydra composition + валидация. Ловит опечатку в имени ветки и лишний
     ключ (extra='forbid') до запуска обучения."""
     for path in CONFIGS:
         cfg = load_config(path, ROOT)
@@ -40,7 +41,7 @@ def test_every_config_loads():
 def test_missing_root_rejected():
     """Конфиг без root не должен «проходить». Плейсхолдер вида "TODO" здесь
     страшнее отсутствия проверки: он делает тест выше зелёным и врёт."""
-    non_dummy = [p for p in CONFIGS if p.name != "dummy.json"]
+    non_dummy = [p for p in CONFIGS if p.name != "dummy.yaml"]
     assert non_dummy, "нечего проверять"
     for path in non_dummy:
         with pytest.raises(ValidationError):
@@ -55,7 +56,7 @@ def test_every_branch_has_a_config():
 
 
 def test_overrides():
-    cfg = load_config(CONFIG_DIR / "dummy.json", ["data.context_k=8", "train.lr=0.5"])
+    cfg = load_config(CONFIG_DIR / "dummy.yaml", ["data.context_k=8", "train.lr=0.5"])
     assert cfg.data.context_k == 8
     assert cfg.train.lr == 0.5
 
@@ -96,10 +97,34 @@ def test_cross_attn_needs_context_frames():
 def test_registry_matches_configs():
     """Реестр — единственный источник правды; конфиги не должны его обгонять."""
     for path in CONFIGS:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = OmegaConf.to_container(OmegaConf.load(path), resolve=False)
+        assert isinstance(raw, dict)
         name = raw.get("context", {}).get("name")
         if name is not None:
             assert name in registry.CONTEXT_MODULES, path.name
+
+
+def test_every_config_uses_hydra_defaults_list():
+    for path in CONFIGS:
+        raw = OmegaConf.to_container(OmegaConf.load(path), resolve=False)
+        assert isinstance(raw, dict)
+        assert raw.get("defaults") == ["_base_", "_self_"]
+
+
+def test_base_values_are_composed():
+    cfg = load_config(CONFIG_DIR / "dummy.yaml")
+    assert cfg.train.epochs == 12
+    assert cfg.context.fusion == "residual"
+
+
+def test_unknown_hydra_override_is_rejected():
+    with pytest.raises(ConfigCompositionException):
+        load_config(CONFIG_DIR / "dummy.yaml", ["train.learning_rate=0.5"])
+
+
+def test_legacy_json_format_is_rejected():
+    with pytest.raises(ValueError, match="Hydra YAML"):
+        load_config(CONFIG_DIR / "dummy.json")
 
 
 if __name__ == "__main__":

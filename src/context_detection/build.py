@@ -2,92 +2,59 @@
 
 from __future__ import annotations
 
-import inspect
+from typing import Any
 
 import torch
+from torch import nn
+from torch.utils.data import DataLoader
 
 from .config import ExperimentConfig, load_config
 from .contracts import ContextBatch, DetectionBatch
-from .models.detector import DetectorAdapter, DummyDetector
-from .models.memory import (
-    BridgeADMemory,
-    ContextCrossAttention,
-    ContextModule,
-    EMASlot,
-    NoContext,
-    StreamQueue,
+from .data.protocols import build_dataloader
+from .models.detector import DetectorAdapter
+from .models.memory import ContextModule
+from .models.protocols import _CONTEXT_MODULES as _MODEL_CONTEXT_MODULES
+from .models.protocols import (
+    build_context_module as build_registered_context_module,
+)
+from .models.protocols import (
+    build_registered_detector,
+    build_registered_model,
 )
 from .models.wrapper import ContextDetector
+
+_CONTEXT_MODULES = _MODEL_CONTEXT_MODULES
 
 __all__ = [
     "ContextDetector",
     "ExperimentConfig",
     "build_context_module",
+    "build_dataset",
     "build_detector",
     "build_model",
     "load_config",
     "make_dummy_batch",
 ]
 
-_CONTEXT_MODULES: dict[str, type[ContextModule]] = {
-    "none": NoContext,
-    "ema_slot": EMASlot,
-    "cross_attn": ContextCrossAttention,
-    "stream_queue": StreamQueue,
-    "bridge_ad": BridgeADMemory,
-}
-
 
 def build_detector(cfg: ExperimentConfig) -> DetectorAdapter:
-    d = cfg.detector
-    if d.name == "dummy":
-        detector = DummyDetector(
-            num_queries=d.num_queries,
-            dim=d.dim,
-            num_classes=d.num_classes,
-            num_decoder_layers=d.num_decoder_layers,
-            num_heads=d.num_heads,
-        )
-    else:  # rfdetr
-        from .models.rfdetr import RFDetrAdapter
-
-        detector = RFDetrAdapter(variant=d.variant, weights=d.weights)
-
-    if d.freeze_backbone or d.freeze_decoder:
-        detector.freeze(backbone=d.freeze_backbone, decoder=d.freeze_decoder)
-    return detector
+    """Совместимый detector-only API поверх model protocol registry."""
+    return build_registered_detector(cfg)
 
 
 def build_context_module(cfg: ExperimentConfig) -> ContextModule:
-    name = cfg.context.name
-    cls = _CONTEXT_MODULES[name]  # имя уже провалидировано Literal'ом в конфиге
-    if inspect.isabstract(cls):
-        # read/write остались @abstractmethod → ветка ещё заготовка. Без этой
-        # ветки наружу летит "Can't instantiate abstract class" — правда, но
-        # чтобы её прочитать, надо знать про ABC.
-        raise NotImplementedError(
-            f"ветка контекста {name!r} ещё не реализована (Человек 4): "
-            f"{cls.__name__} не переопределяет read/write"
-        )
-    # TODO(чел.4): у веток появятся собственные аргументы (num_slots, write_gate,
-    # motion, horizon) — прокидывать отсюда, конфиг их уже несёт и валидирует.
-    return cls()
+    """Совместимый API сборки context module."""
+    return build_registered_context_module(cfg)
 
 
-def build_model(cfg: ExperimentConfig) -> ContextDetector:
-    detector = build_detector(cfg)
-    return ContextDetector(
-        detector=detector,
-        context_module=build_context_module(cfg),
-        fusion=cfg.context.fusion,
-        detach_state=cfg.train.detach_state,
-    )
+def build_model(cfg: ExperimentConfig) -> nn.Module:
+    """Построить публичный nn.Module endpoint через model protocol."""
+    return build_registered_model(cfg)
 
 
-def build_dataset(cfg: ExperimentConfig, split: str):
-    """TODO(чел.2): imagenet_vid | ovis. Для "dummy" датасета нет — там
-    make_dummy_batch."""
-    raise NotImplementedError("Человек 2")
+def build_dataset(cfg: ExperimentConfig, split: str) -> DataLoader[Any]:
+    """Построить публичный DataLoader endpoint через dataset protocol."""
+    return build_dataloader(cfg, split)
 
 
 def make_dummy_batch(

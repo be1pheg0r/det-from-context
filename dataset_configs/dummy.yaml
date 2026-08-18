@@ -1,0 +1,7 @@
+# Заглушка будущего протокола датасетов.
+name: dummy
+root: null
+splits:
+  train: synthetic
+  validation: synthetic
+annotations: generated

@@ -1,0 +1,7 @@
+defaults:
+  - _base_
+  - _self_
+
+# Milestone 1: RF-DETR без контекста. Точка отсчёта для всех delta AP.
+context:
+  name: none

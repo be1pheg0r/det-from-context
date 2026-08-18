@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+creds*
+agent_specs/
+edits/
+
+# Experiment results
+/outputs/

@@ -1,0 +1,7 @@
+# Ссылка на данные задаётся окружением машины, а не коммитится в репозиторий.
+name: imagenet_vid
+root: ${oc.env:IMAGENET_VID_ROOT,null}
+splits:
+  train: Data/VID/train
+  validation: Data/VID/val
+annotations: Annotations/VID

@@ -1,0 +1,60 @@
+# Общая конфигурация. Путь к датасету задаётся override-ом data.root=...
+data:
+  name: imagenet_vid
+  config_path: dataset_configs/imagenet_vid.yaml
+  root: null
+  context_k: 4
+  context_strategy: prev_k
+  clip_len: 4
+  image_size: 224
+  augmentations:
+    - random_horizontal_flip
+    - color_jitter
+
+detector:
+  name: rfdetr
+  variant: base
+  weights: null
+  freeze_backbone: true
+  num_queries: 300
+  dim: 256
+
+context:
+  name: none
+  fusion: residual
+  num_slots: 64
+
+train:
+  epochs: 12
+  lr: 1e-4
+  batch_size: 2
+  grad_accum: 1
+  optimizer: adamw
+  weight_decay: 1e-4
+  num_workers: 4
+  seed: 42
+  amp: true
+  denoising: true
+
+validation:
+  metrics:
+    - map
+    - map_50
+  every_n_epochs: 1
+  batch_size: 2
+
+logging:
+  level: INFO
+  every_n_steps: 20
+
+output:
+  root: outputs
+  checkpoint_every_n_epochs: 1
+  keep_last_checkpoints: 3
+  save_best: true
+  monitor: map
+
+clearml:
+  enabled: false
+  project_name: context-detection
+  tags: []
