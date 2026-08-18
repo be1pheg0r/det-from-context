@@ -7,6 +7,7 @@ context_after_projector/context_before_decoder),
 from __future__ import annotations
 
 import math
+import os
 from typing import Any
 
 import torch
@@ -14,9 +15,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel
 
-from ..contracts import ContextOutput, DetectionBatch, DetectorOutput
+from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
+from .detector import DetectorAdapter
 
 DINOV3_HF_NAME = "facebook/dinov3-vitb16-pretrain-lvd1689m"
+
+# variant -> HF repo. "base" оставлен дефолтом ради обратной совместимости
+# с текущим ноутбуком, где variant не передавался.
+DINOV3_VARIANTS = {
+    "small": "facebook/dinov3-vits16-pretrain-lvd1689m",
+    "base": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    "large": "facebook/dinov3-vitl16-pretrain-lvd1689m",
+}
 
 
 def inverse_sigmoid(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
@@ -31,7 +41,12 @@ class _DINOv3Backbone(nn.Module):
 
     def __init__(self, hf_name: str = DINOV3_HF_NAME, freeze: bool = False):
         super().__init__()
-        self.model = AutoModel.from_pretrained(hf_name)
+        # Токен только из окружения (huggingface-cli login / HF_TOKEN / Kaggle
+        # secret) — никогда не хардкодить и не класть в конфиг, который может
+        # уйти в git. None здесь безопасен: from_pretrained тогда попробует
+        # уже закешированный логин, если он есть.
+        token = os.environ.get("HF_TOKEN")
+        self.model = AutoModel.from_pretrained(hf_name, token=token)
         self.patch_size = self.model.config.patch_size
         self.embed_dim = self.model.config.hidden_size
         self.num_special_tokens = 1 + getattr(
@@ -268,25 +283,31 @@ class _DeformableDecoder(nn.Module):
         return layer_logits, layer_boxes, layer_queries
 
 
-class RFDetrAdapter(nn.Module):
+class RFDetrAdapter(DetectorAdapter):
     """RF-DETR: DINOv3 ViT-B/16 + multi-scale projector + deformable decoder
-    с DAB-DETR anchor-боксами. Бейзлайн — временной контекст не подключён."""
+    с DAB-DETR anchor-боксами.
+
+    Точка подключения контекста — единственная, что даёт протокол
+    `DetectorAdapter`: `initial_queries` отдаёт query_content наружу,
+    `ContextDetector` читает по нему память и возвращает уже слитые queries
+    в `query_init`. Свои context_after_backbone/after_projector хуки убраны:
+    `ContextDetector` их не вызывает, а не вызываемый код — источник багов,
+    которые не ловятся regression-тестом. Возврат к ним — через отдельный
+    callback между слоями decoder, согласованный с Человеком 1 (см. TODO).
+    """
 
     def __init__(
-        self, weights: str | None = None, config: dict[str, Any] | None = None
+        self,
+        variant: str = "base",
+        weights: str | None = None,
+        config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self.config = config or {}
-
-        self.use_context_after_backbone = self.config.get(
-            "context_after_backbone", False
-        )
-        self.use_context_after_projector = self.config.get(
-            "context_after_projector", False
-        )
-        self.use_context_before_decoder = self.config.get(
-            "context_before_decoder", False
-        )
+        if variant not in DINOV3_VARIANTS:
+            raise ValueError(
+                f"неизвестный variant {variant!r}, есть: {sorted(DINOV3_VARIANTS)}"
+            )
 
         self.hidden_dim = self.config.get("hidden_dim", 256)
         self.n_levels = self.config.get("n_levels", 3)
@@ -294,7 +315,7 @@ class RFDetrAdapter(nn.Module):
         self.num_classes = self.config.get("num_classes", 10)  # BDD100K detection
 
         self.backbone = _DINOv3Backbone(
-            DINOV3_HF_NAME, freeze=self.config.get("freeze_backbone", False)
+            DINOV3_VARIANTS[variant], freeze=self.config.get("freeze_backbone", False)
         )
         self.projector = _MultiScaleProjector(
             self.backbone.embed_dim, self.hidden_dim, n_levels=self.n_levels
@@ -329,6 +350,20 @@ class RFDetrAdapter(nn.Module):
         if weights is not None:
             self.load_state_dict(torch.load(weights, map_location="cpu"))
 
+    @property
+    def dim(self) -> int:
+        return self.hidden_dim
+
+    def initial_queries(self, batch: DetectionBatch) -> torch.Tensor:
+        b = batch.images.shape[0]
+        return self.query_content.weight.unsqueeze(0).expand(b, -1, -1)
+
+    def encode_context_frames(self, context: ContextBatch) -> list[torch.Tensor] | None:
+        # MeMOT (и остальные рекуррентные ветки) читают MemoryState, а не
+        # пиксели контекстных кадров — ContextModule.needs_context_frames=False
+        # для них, и ContextDetector этот метод вообще не вызывает.
+        return None
+
     def _flatten_levels(self, feats: list[torch.Tensor]):
         srcs, poss, shapes = [], [], []
         for lvl, f in enumerate(feats):
@@ -351,31 +386,21 @@ class RFDetrAdapter(nn.Module):
         return pos.flatten(2)  # (B,Q,hidden_dim)
 
     def forward(
-        self, batch: DetectionBatch, context: ContextOutput | None = None
+        self, batch: DetectionBatch, query_init: torch.Tensor | None = None
     ) -> DetectorOutput:
         B = batch.images.shape[0]
 
         features = self.backbone(batch.images)
-        if context is not None and self.use_context_after_backbone:
-            features = self._inject_context(features, context)
-
         ms_features = self.projector(features)
-        if context is not None and self.use_context_after_projector:
-            ms_features = self._inject_context(ms_features, context)
-
         memory, pos_flat, shapes = self._flatten_levels(ms_features)
 
-        query_content = self.query_content.weight.unsqueeze(0).expand(B, -1, -1)
         init_boxes = self.anchor_boxes.sigmoid().unsqueeze(0).expand(B, -1, -1)
         query_pos = self.query_pos_mlp(self._anchor_to_pos(init_boxes[..., :2]))
 
-        queries = query_content
-        if (
-            context is not None
-            and self.use_context_before_decoder
-            and context.query_delta is not None
-        ):
-            queries = queries + context.query_delta  # residual-фьюжн с памятью
+        # query_init=None -> оригинальный RF-DETR (regression baseline).
+        # Фьюжн с памятью уже сделан снаружи, в ContextDetector.fusion —
+        # здесь его повторять нельзя, иначе память смешивается дважды.
+        queries = self.initial_queries(batch) if query_init is None else query_init
 
         layer_logits, layer_boxes, layer_queries = self.decoder(
             queries, query_pos, init_boxes, memory, shapes
@@ -397,10 +422,6 @@ class RFDetrAdapter(nn.Module):
             decoder_layers=decoder_layers,
             aux={},
         )
-
-    def _inject_context(self, features, context: ContextOutput):
-        # точка расширения для памяти между кадрами; в бейзлайне не вызывается
-        return features
 
     def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
         if backbone:
