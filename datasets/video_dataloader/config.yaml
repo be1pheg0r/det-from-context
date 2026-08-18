@@ -11,10 +11,9 @@ dataset:
     - ".jpeg"
     - ".png"
 
-
 video:
-  videos_dir: "../bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
-  annotations_dir: "../out/labels3"
+  videos_dir: "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
+  annotations_dir: "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/100k/test"
 
   # Опорным является последний кадр последовательности
   reference_frame: "last"
