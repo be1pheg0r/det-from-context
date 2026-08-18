@@ -95,7 +95,7 @@ class DetectorConfig(_Section):
             )
         if self.dim % self.num_heads:
             raise ValueError(f"dim={self.dim} не делится на num_heads={self.num_heads}")
-        if self.name == "rfdetr" and not self.variant:
+        if self.name == "rfdetr" and self.component_path is None and not self.variant:
             raise ValueError("для rfdetr нужен variant")
         return self
 

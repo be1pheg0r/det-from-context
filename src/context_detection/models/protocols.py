@@ -185,8 +185,11 @@ def _build_dummy_detector(config: ExperimentConfig) -> DetectorAdapter:
 def _build_rfdetr_detector(config: ExperimentConfig) -> DetectorAdapter:
     from .rfdetr import RFDetrAdapter
 
+    variant: str | None = config.detector.variant
+    if variant is None:
+        raise ValueError("для rfdetr нужен variant")
     return RFDetrAdapter(
-        variant=config.detector.variant,
+        variant=variant,
         weights=config.detector.weights,
     )
 
