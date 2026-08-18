@@ -1,0 +1,49 @@
+dataset:
+  images_dir: "data/images"
+  annotations_dir: "data/json"
+
+  image_size:
+    width: 1280
+    height: 720
+
+  image_extensions:
+    - ".jpg"
+    - ".jpeg"
+    - ".png"
+
+
+video:
+  videos_dir: "../bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
+  annotations_dir: "../out/labels3"
+
+  # Опорным является последний кадр последовательности
+  reference_frame: "last"
+
+  # Сколько кадров взять ДО опорного
+  frames_before: 4
+
+  # Сколько кадров в секунду брать
+  fps: 5
+
+
+dataloader:
+  batch_size: 4
+  shuffle: true
+  num_workers: 4
+
+  pin_memory: true
+
+
+classes:
+  "person": 0
+  "car": 1
+  "truck": 2
+  "bus": 3
+  "motorcycle": 4
+  "bicycle": 5
+  "traffic light": 6
+  "traffic sign": 7
+  "rider": 8
+  "bike": 9
+  "motor": 10
+  "train": 11
