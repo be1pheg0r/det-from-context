@@ -18,6 +18,7 @@ class BDD100KDataset(Dataset):
 
         self.classes = config["classes"]
 
+        self.normalize_boxes = config["normalize_boxes"]
         self.samples = self._build_samples()
 
     def _build_samples(self):
@@ -121,7 +122,18 @@ class BDD100KDataset(Dataset):
             y1 *= scale_y
             y2 *= scale_y
 
-            resized_boxes.append([x1, y1, x2, y2])
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            w = x2 - x1
+            h = y2 - y1
+
+            if self.normalize_boxes:
+                cx /= self.target_width
+                cy /= self.target_height
+                w /= self.target_width
+                h /= self.target_height
+
+            resized_boxes.append([cx, cy, w, h])
 
         # -------------------------
         # 6. Tensor

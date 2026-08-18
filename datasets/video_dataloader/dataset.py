@@ -45,6 +45,8 @@ class VideoDataset(Dataset):
 
         self.classes = config["classes"]
 
+        self.normalize_boxes = config["normalize_boxes"]
+
         self.samples = self._build_samples()
 
     # ============================================================
@@ -327,8 +329,18 @@ class VideoDataset(Dataset):
             x2 = box["x2"] * scale_x
             y2 = box["y2"] * scale_y
 
-            boxes.append([x1, y1, x2, y2])
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            w = x2 - x1
+            h = y2 - y1
 
+            if self.normalize_boxes:
+                cx /= self.target_width
+                cy /= self.target_height
+                w /= self.target_width
+                h /= self.target_height
+
+            boxes.append([cx, cy, w, h])
             labels.append(self.classes[category])
 
         # ------------------------------------------------

@@ -6,6 +6,8 @@ dataset:
     width: 1280
     height: 720
 
+  normalize_boxes: true
+
   image_extensions:
     - ".jpg"
     - ".jpeg"
@@ -44,7 +46,7 @@ classes:
   'lane/road curb': 4
   'person': 5
   'area/alternative': 6
-  'lane/single white': 7 
+  'lane/single white': 7
   'lane/double yellow': 8
   'bus': 9
   'truck': 10
