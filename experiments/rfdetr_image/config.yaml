@@ -1,36 +1,32 @@
-defaults:
-  - _self_
-
 name: rfdetr-image-datasphere-smoke
-
 data:
   name: image_dataloader
-  # Datasphere unpacks directory inputs as /job/<basename>; locally the
-  # fallback remains project-relative.
-  component_path: ${oc.env:IMAGE_DATALOADER_COMPONENT_PATH,datasets/image_dataloader}
+  component_path: datasets/image_dataloader
   config_path: datasets/image_dataloader/config.yaml
   root: null
   context_k: 0
   context_strategy: empty
   clip_len: 1
-  image_size: 512
-  augmentations: [horizontal_flip, color_jitter]
-
+  image_size: 704
+  augmentations:
+  - horizontal_flip
+  - color_jitter
 detector:
   name: rfdetr
-  component_path: ${oc.env:RFDETR_COMPONENT_PATH,models/rfdetr}
+  component_path: models/rfdetr
   config_path: models/rfdetr/config.yaml
   variant: large
   weights: null
-  # Worker additionally freezes the transformer encoder and every non-class
-  # parameter; only RF-DETR's class_embed is fine-tuned.
   freeze_backbone: true
   freeze_decoder: false
+  freeze_encoder: null
+  freeze_bbox_embed: false
+  freeze_cls_embed: false
   num_queries: 300
   dim: 256
+  num_classes: 31
   num_heads: 8
   num_decoder_layers: 3
-
 context:
   name: none
   fusion: residual
@@ -46,11 +42,10 @@ context:
   write_gate: false
   motion: null
   horizon: 0
-
 train:
   epochs: 3
   lr: 0.0001
-  batch_size: 64
+  batch_size: 32
   grad_accum: 2
   optimizer: adamw
   weight_decay: 0.0001
@@ -63,25 +58,26 @@ train:
   amp: true
   denoising: false
   detach_state: true
-
 validation:
-  metrics: [map, map_50]
+  metrics:
+  - map
+  - map_50
   every_n_epochs: 1
-  batch_size: 64
-
+  batch_size: 32
 logging:
   level: INFO
   every_n_steps: 20
-
 output:
-  # Datasphere job config uploads this directory to the mounted S3 bucket.
-  root: ${oc.env:RFDETR_OUTPUT_ROOT,outputs}
+  root: /job/s3/bt17f0k57rfieh6jugr8/rfdetr-image-runs
   checkpoint_every_n_epochs: 1
   keep_last_checkpoints: 2
   save_best: true
   monitor: map
-
 clearml:
   enabled: true
   project_name: context-detection
-  tags: [rfdetr, image-dataloader, datasphere, smoke]
+  tags:
+  - rfdetr
+  - image-dataloader
+  - datasphere
+  - smoke

@@ -52,8 +52,13 @@ class RFDetrImageExperiment:
         detector = getattr(self.model, "detector", None)
         if not isinstance(detector, RFDetrAdapter):
             raise TypeError("RF-DETR experiment requires RFDetrAdapter")
-        detector.freeze_for_class_adaptation()
-        self._configure_trainable_blocks()
+        detector.freeze(
+            backbone=self.config.detector.freeze_backbone,
+            decoder=self.config.detector.freeze_decoder,
+            encoder=self.config.detector.freeze_encoder,
+            bbox_embed=bool(self.config.detector.freeze_bbox_embed),
+            cls_embed=bool(self.config.detector.freeze_cls_embed),
+        )
         self.model.to(self.device)
         self.criterion = SetCriterion(config.detector.num_classes).to(self.device)
         self.amp_enabled = config.train.amp
@@ -107,19 +112,6 @@ class RFDetrImageExperiment:
             "dataset_endpoint": type(self.train_loader).__name__,
         }
 
-    def _configure_trainable_blocks(self) -> None:
-        freeze_backbone = self.config.detector.freeze_backbone
-        freeze_decoder = self.config.detector.freeze_decoder
-
-        for name, parameter in self.model.named_parameters():
-            lowered = name.lower()
-            if "class_embed" in lowered:
-                parameter.requires_grad = True
-            elif "decoder" in lowered:
-                parameter.requires_grad = not freeze_decoder
-            elif "backbone" in lowered or "encoder" in lowered:
-                parameter.requires_grad = not freeze_backbone
-
     def _make_optimizer(self) -> torch.optim.Optimizer:
         base_lr = self.config.train.lr
         grouped_parameters: dict[str, list[nn.Parameter]] = {
@@ -133,11 +125,14 @@ class RFDetrImageExperiment:
             if not parameter.requires_grad:
                 continue
             lowered = name.lower()
-            if "class_embed" in lowered:
+            if any(
+                name in lowered
+                for name in ("class_embed", "cls_embed", "bbox_embed", "box_embed")
+            ):
                 group = "head"
             elif "decoder" in lowered:
                 group = "decoder"
-            elif "backbone" in lowered or "encoder" in lowered:
+            elif "backbone" in lowered or "transformer.encoder" in lowered:
                 group = "backbone"
             else:
                 group = "other"
@@ -435,8 +430,8 @@ def _render_predictions(
             width,
             height,
             "red",
-            f"#{rank} {int(class_id)} "
-            f"{float(confidence):.2f} IoU {float(best_iou):.2f}",
+            f"#{rank} {int(class_id)} {float(confidence):.2f}"
+            f" IoU {float(best_iou):.2f}",
         )
     mean_iou = float(best_ious.mean()) if len(best_ious) else 0.0
     matched = int((best_ious >= 0.5).sum())

@@ -2,24 +2,16 @@ import json
 from math import isfinite
 from pathlib import Path
 
-import cv2
 import torch
+from PIL import Image
+from rfdetr.datasets.coco import make_coco_transforms_square_div_64
 from torch.utils.data import Dataset
 
 
 class BDD100KDataset(Dataset):
-    """BDD100K-style dataset built from explicit image and annotation folders."""
+    """BDD100K-style dataset using RF-DETR's native preprocessing pipeline."""
 
     def __init__(self, images_dir, annotations_dir, config):
-        """Build the dataset from independent image and JSON annotation folders.
-
-        ``config`` contains parsing and preprocessing options only.  It does
-        not control where either dataset directory is located.
-
-        The component config stores dataset-specific fields under
-        ``dataset``. Older flat configs still pass them at the top level,
-        so we accept both layouts for compatibility.
-        """
         self.images_dir = Path(images_dir)
         self.annotations_dir = Path(annotations_dir)
 
@@ -29,15 +21,58 @@ class BDD100KDataset(Dataset):
         if not isinstance(image_size, dict):
             image_size = {"width": image_size, "height": image_size}
 
-        self.target_width = image_size.get("width")
-        self.target_height = image_size.get("height")
+        target_width = image_size.get("width")
+        target_height = image_size.get("height")
+        if target_width is None or target_height is None:
+            raise ValueError("dataset.image_size.width/height must be configured")
+        if target_width != target_height:
+            raise ValueError(
+                "RF-DETR square preprocessing requires image_size.width "
+                "== image_size.height"
+            )
 
+        self.resolution = int(target_width)
         self.image_extensions = set(dataset_config.get("image_extensions", []))
         self.classes = config.get("classes", dataset_config.get("classes", {}))
-        self.normalize_boxes = dataset_config.get(
-            "normalize_boxes", config.get("normalize_boxes", False)
+        self.image_set = self._resolve_image_set(dataset_config)
+
+        self.transform = make_coco_transforms_square_div_64(
+            image_set=self.image_set,
+            resolution=self.resolution,
+            multi_scale=bool(dataset_config.get("multi_scale", False)),
+            expanded_scales=bool(dataset_config.get("expanded_scales", False)),
+            skip_random_resize=bool(dataset_config.get("skip_random_resize", False)),
+            patch_size=int(dataset_config.get("patch_size", 16)),
+            num_windows=int(dataset_config.get("num_windows", 4)),
+            aug_config=dataset_config.get("aug_config"),
+            scale_jitter=bool(dataset_config.get("scale_jitter", True)),
+            gpu_postprocess=False,
         )
+
         self.samples = self._build_samples()
+
+    def _resolve_image_set(self, dataset_config):
+        configured = dataset_config.get("image_set")
+        if configured is not None:
+            value = str(configured).lower()
+            if value == "validation":
+                value = "val"
+            if value not in {"train", "val", "test", "val_speed"}:
+                raise ValueError(f"Unsupported RF-DETR image_set: {configured!r}")
+            return value
+
+        parts = {part.lower() for part in self.images_dir.parts}
+        if "train" in parts:
+            return "train"
+        if "validation" in parts or "valid" in parts or "val" in parts:
+            return "val"
+        if "test" in parts:
+            return "test"
+
+        raise ValueError(
+            "Cannot infer RF-DETR image_set from images_dir. "
+            "Set dataset.image_set to train/val/test in the dataset config."
+        )
 
     def _build_samples(self):
         samples = []
@@ -46,19 +81,11 @@ class BDD100KDataset(Dataset):
             if image_path.suffix.lower() not in self.image_extensions:
                 continue
 
-            # Предполагаем, что:
-            # image.jpg -> image.json
             annotation_path = self.annotations_dir / f"{image_path.stem}.json"
-
             if not annotation_path.exists():
                 continue
 
-            samples.append(
-                {
-                    "image": image_path,
-                    "annotation": annotation_path,
-                }
-            )
+            samples.append({"image": image_path, "annotation": annotation_path})
 
         return samples
 
@@ -67,127 +94,68 @@ class BDD100KDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.samples[idx]
-
         image_path = sample["image"]
         annotation_path = sample["annotation"]
 
-        # -------------------------
-        # 1. Читаем изображение
-        # -------------------------
+        with Image.open(image_path) as source:
+            image = source.convert("RGB")
 
-        image = cv2.imread(str(image_path))
-
-        if image is None:
-            raise RuntimeError(f"Не удалось прочитать изображение: {image_path}")
-
-        # OpenCV: H x W x C, BGR
-        original_height, original_width = image.shape[:2]
-
-        # -------------------------
-        # 2. Читаем JSON
-        # -------------------------
+        original_width, original_height = image.size
 
         with open(annotation_path, encoding="utf-8") as f:
             annotation = json.load(f)
 
-        # Одному изображению соответствует первый frame.  BDD100K JSON может
-        # также содержать polygon-only objects without ``box2d``.
         frames = annotation.get("frames", [])
         frame = frames[0] if isinstance(frames, list) and frames else {}
         objects = frame.get("objects", []) if isinstance(frame, dict) else []
 
-        # -------------------------
-        # 3. Получаем bbox
-        # -------------------------
-
         boxes = []
         labels = []
+        areas = []
 
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
-            category = obj.get("category")
 
-            # Пропускаем неизвестные классы
+            category = obj.get("category")
             if category not in self.classes:
                 continue
 
-            # Lines, drivable areas and other BDD100K objects may contain
-            # ``poly2d`` only.  RF-DETR trains on finite, non-empty boxes.
             box = obj.get("box2d")
             if not isinstance(box, dict):
                 continue
+
             try:
                 x1, y1, x2, y2 = (float(box[key]) for key in ("x1", "y1", "x2", "y2"))
             except (KeyError, TypeError, ValueError):
                 continue
+
             if not all(isfinite(value) for value in (x1, y1, x2, y2)):
                 continue
+
             x1 = min(max(x1, 0.0), original_width)
             x2 = min(max(x2, 0.0), original_width)
             y1 = min(max(y1, 0.0), original_height)
             y2 = min(max(y2, 0.0), original_height)
+
             if x2 <= x1 or y2 <= y1:
                 continue
 
             boxes.append([x1, y1, x2, y2])
             labels.append(self.classes[category])
-
-        # -------------------------
-        # 4. Resize изображения
-        # -------------------------
-
-        scale_x = self.target_width / original_width
-        scale_y = self.target_height / original_height
-
-        image = cv2.resize(image, (self.target_width, self.target_height))
-
-        # -------------------------
-        # 5. Масштабируем bbox
-        # -------------------------
-
-        resized_boxes = []
-
-        for x1, y1, x2, y2 in boxes:
-            x1 *= scale_x
-            x2 *= scale_x
-            y1 *= scale_y
-            y2 *= scale_y
-
-            cx = (x1 + x2) / 2
-            cy = (y1 + y2) / 2
-            w = x2 - x1
-            h = y2 - y1
-
-            if self.normalize_boxes:
-                cx /= self.target_width
-                cy /= self.target_height
-                w /= self.target_width
-                h /= self.target_height
-
-            resized_boxes.append([cx, cy, w, h])
-
-        # -------------------------
-        # 6. Tensor
-        # -------------------------
-
-        # BGR -> RGB
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        # HWC -> CHW
-        image = torch.from_numpy(image).permute(2, 0, 1)
-
-        # uint8 -> float32
-        image = image.float() / 255.0
-
-        # -------------------------
-        # 7. Target
-        # -------------------------
+            areas.append((x2 - x1) * (y2 - y1))
 
         target = {
-            "boxes": torch.tensor(resized_boxes, dtype=torch.float32).reshape(-1, 4),
-            "labels": torch.tensor(labels, dtype=torch.long),
+            "boxes": torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4),
+            "labels": torch.as_tensor(labels, dtype=torch.long),
             "image_id": torch.tensor(idx, dtype=torch.long),
+            "area": torch.as_tensor(areas, dtype=torch.float32),
+            "iscrowd": torch.zeros(len(boxes), dtype=torch.long),
+            "orig_size": torch.tensor(
+                [original_height, original_width], dtype=torch.long
+            ),
+            "size": torch.tensor([original_height, original_width], dtype=torch.long),
         }
 
+        image, target = self.transform(image, target)
         return image, target

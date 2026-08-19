@@ -218,11 +218,14 @@ class RFDetrAdapter(DetectorAdapter):
         cls_embed: bool = False,
     ) -> None:
         """Заморозить/разморозить выбранные upstream-блоки детектора."""
-        freeze_encoder: bool = encoder if encoder is not None else bool(backbone)
-        for path in ("backbone", "transformer.encoder"):
-            module = _find_module(self.model, path)
-            if module is not None:
-                _set_trainable(module, not freeze_encoder)
+        freeze_backbone = bool(backbone)
+        freeze_encoder = encoder if encoder is not None else freeze_backbone
+        backbone_module = _find_module(self.model, "backbone")
+        if backbone_module is not None:
+            _set_trainable(backbone_module, not freeze_backbone)
+        encoder_module = _find_module(self.model, "transformer.encoder")
+        if encoder_module is not None:
+            _set_trainable(encoder_module, not freeze_encoder)
         _set_trainable(
             _resolve_module(self.model, ("transformer.decoder", "decoder")), not decoder
         )
@@ -232,15 +235,6 @@ class RFDetrAdapter(DetectorAdapter):
         _set_trainable(
             _resolve_module(self.model, ("cls_embed", "class_embed")), not cls_embed
         )
-
-    def freeze_for_class_adaptation(self) -> None:
-        """Оставить обучаемой только class-specific prediction head.
-
-        Используется для дешёвого переноса RF-DETR на новый набор классов:
-        backbone и весь transformer, включая encoder, остаются фиксированными.
-        """
-        _set_trainable(self.model, False)
-        _set_trainable(_resolve_module(self.model, ("cls_embed", "class_embed")), True)
 
     def _build_upstream(
         self,
