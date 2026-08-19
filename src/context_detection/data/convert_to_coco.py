@@ -160,9 +160,9 @@ def convert_to_coco(
 
 def main():
     convert_to_coco(
-        json_dir="../../dataset/labels/train",
-        images_dir="../../dataset/10k/train/images",
-        output_json="/job/s3/bt17f0k57rfieh6jugr8/",
+        json_dir="/job/s3/*/bdd100k_downloads/labels/val",
+        images_dir="/job/s3/*/IMAGES_DATASET/valid",
+        output_json="/job/s3/*/IMAGES_DATASET/valid/_annotations.coco.json",
         image_width=1280,
         image_height=720,
     )
