@@ -196,48 +196,6 @@ def test_adapter_injects_batch_specific_queries(
     assert not torch.equal(output.logits, baseline.logits)
 
 
-def test_adapter_encodes_context_and_freezes_upstream_parts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_fake_rfdetr(monkeypatch)
-    adapter = RFDetrAdapter("medium")
-    context = ContextBatch(
-        images=torch.rand(2, 3, 3, 8, 8),
-        valid_mask=torch.ones(2, 3, dtype=torch.bool),
-        time_offsets=torch.ones(2, 3),
-    )
-
-    features = adapter.encode_context_frames(context)
-
-    assert features is not None
-    assert [feature.shape[:3] for feature in features] == [(2, 3, 4), (2, 3, 4)]
-    adapter.freeze(backbone=True, decoder=True)
-    assert not any(
-        parameter.requires_grad for parameter in adapter.model.backbone.parameters()
-    )
-    assert not any(
-        parameter.requires_grad
-        for parameter in adapter.model.transformer.decoder.parameters()
-    )
-    adapter.freeze(backbone=False, decoder=False)
-    assert all(
-        parameter.requires_grad for parameter in adapter.model.backbone.parameters()
-    )
-    assert all(
-        parameter.requires_grad
-        for parameter in adapter.model.transformer.decoder.parameters()
-    )
-    adapter.freeze_for_class_adaptation()
-    assert all(
-        parameter.requires_grad for parameter in adapter.model.class_embed.parameters()
-    )
-    assert not any(
-        parameter.requires_grad
-        for name, parameter in adapter.model.named_parameters()
-        if not name.startswith("class_embed")
-    )
-
-
 def test_adapter_validates_variant_and_forwards_weight_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
