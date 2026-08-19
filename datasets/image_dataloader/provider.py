@@ -62,10 +62,17 @@ class ImageDataLoaderProtocol:
         dataset_config = raw.get("dataset")
         if not isinstance(dataset_config, dict):
             raise ValueError("image_dataloader config requires dataset")
-        dataset_config["image_size"] = {
-            "width": config.data.image_size,
-            "height": config.data.image_size,
-        }
+
+        image_size = config.data.image_size
+        if image_size % 32:
+            raise ValueError(
+                "RF-DETR image_dataloader requires data.image_size divisible by 32, "
+                f"got {image_size}"
+            )
+        # The experiment owns the model input resolution.  The component's
+        # image_size is only a local default for standalone dataloader usage.
+        dataset_config["image_size"] = {"width": image_size, "height": image_size}
+
         self._resolve_paths(raw, Path(config.data.config_path).parent)
         source = BDD100KDataset(
             raw["dataset"]["images_dir"],

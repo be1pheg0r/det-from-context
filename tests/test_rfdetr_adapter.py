@@ -149,6 +149,14 @@ def _batch(batch_size: int = 2) -> DetectionBatch:
     )
 
 
+def test_adapter_normalizes_upstream_box_logits() -> None:
+    logits = torch.tensor([[[-0.5, 0.0, 1.0, 2.0]]])
+
+    boxes = rfdetr_module._normalized_prediction_boxes({"pred_boxes": logits})
+
+    torch.testing.assert_close(boxes, logits.sigmoid())
+
+
 def test_adapter_without_query_override_matches_upstream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

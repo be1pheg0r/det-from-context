@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
@@ -41,11 +42,18 @@ class RFDetrImageExperiment:
         self.components = components
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.device.type != "cuda":
-            raise RuntimeError("RF-DETR Datasphere experiment requires a CUDA GPU")
+            raise RuntimeError(
+                "RF-DETR Datasphere experiment requires CUDA, but PyTorch cannot "
+                "access it: "
+                f"torch={torch.__version__}, torch_cuda={torch.version.cuda}, "
+                "CUDA_VISIBLE_DEVICES="
+                f"{os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+            )
         detector = getattr(self.model, "detector", None)
         if not isinstance(detector, RFDetrAdapter):
             raise TypeError("RF-DETR experiment requires RFDetrAdapter")
         detector.freeze_for_class_adaptation()
+        self._configure_trainable_blocks()
         self.model.to(self.device)
         self.criterion = SetCriterion(config.detector.num_classes).to(self.device)
         self.amp_enabled = config.train.amp
@@ -70,7 +78,7 @@ class RFDetrImageExperiment:
                     for parameter in self.model.parameters()
                     if parameter.requires_grad
                 ),
-                "adaptation": "class_embed_only",
+                "adaptation": "frozen_backbone",
             },
         )
         best_map = float("-inf")
@@ -80,6 +88,7 @@ class RFDetrImageExperiment:
             self.experiment.log_metrics(train_metrics, epoch, "train")
             self.experiment.log_metrics(validation_metrics, epoch, "validation")
             self._remember(train_metrics, validation_metrics)
+            self._save_curve_visualizations(epoch)
             if validation_metrics["map"] > best_map:
                 best_map = validation_metrics["map"]
                 self._save_checkpoint("best.pt", optimizer, epoch, validation_metrics)
@@ -89,7 +98,6 @@ class RFDetrImageExperiment:
             if visual_batch is not None and visual_output is not None:
                 self._save_prediction_visualization(epoch, visual_batch, visual_output)
 
-        self._save_curve_visualization()
         return {
             "epochs": self.config.train.epochs,
             "best_map": best_map,
@@ -99,24 +107,68 @@ class RFDetrImageExperiment:
             "dataset_endpoint": type(self.train_loader).__name__,
         }
 
+    def _configure_trainable_blocks(self) -> None:
+        freeze_backbone = self.config.detector.freeze_backbone
+        freeze_decoder = self.config.detector.freeze_decoder
+
+        for name, parameter in self.model.named_parameters():
+            lowered = name.lower()
+            if "class_embed" in lowered:
+                parameter.requires_grad = True
+            elif "decoder" in lowered:
+                parameter.requires_grad = not freeze_decoder
+            elif "backbone" in lowered or "encoder" in lowered:
+                parameter.requires_grad = not freeze_backbone
+
     def _make_optimizer(self) -> torch.optim.Optimizer:
-        parameters = [
-            parameter
-            for parameter in self.model.parameters()
-            if parameter.requires_grad
+        base_lr = self.config.train.lr
+        grouped_parameters: dict[str, list[nn.Parameter]] = {
+            "backbone": [],
+            "decoder": [],
+            "head": [],
+            "other": [],
+        }
+
+        for name, parameter in self.model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            lowered = name.lower()
+            if "class_embed" in lowered:
+                group = "head"
+            elif "decoder" in lowered:
+                group = "decoder"
+            elif "backbone" in lowered or "encoder" in lowered:
+                group = "backbone"
+            else:
+                group = "other"
+            grouped_parameters[group].append(parameter)
+
+        learning_rates = {
+            "backbone": base_lr * self.config.train.backbone_lr_multiplier,
+            "decoder": base_lr * self.config.train.decoder_lr_multiplier,
+            "head": base_lr * self.config.train.head_lr_multiplier,
+            "other": base_lr,
+        }
+        parameter_groups = [
+            {"params": parameters, "lr": learning_rates[name], "name": name}
+            for name, parameters in grouped_parameters.items()
+            if parameters
         ]
+
+        optimizer_kwargs = {
+            "lr": base_lr,
+            "weight_decay": self.config.train.weight_decay,
+        }
         try:
             return torch.optim.AdamW(
-                parameters,
-                lr=self.config.train.lr,
-                weight_decay=self.config.train.weight_decay,
+                parameter_groups,
                 fused=True,
+                **optimizer_kwargs,
             )
         except (RuntimeError, TypeError):
             return torch.optim.AdamW(
-                parameters,
-                lr=self.config.train.lr,
-                weight_decay=self.config.train.weight_decay,
+                parameter_groups,
+                **optimizer_kwargs,
             )
 
     def _train_epoch(
@@ -218,28 +270,90 @@ class RFDetrImageExperiment:
     ) -> None:
         path = self.experiment.root / "logs" / f"predictions-epoch-{epoch}.png"
         _render_predictions(batch, output, path)
+        self.experiment.log_image(
+            "validation predictions",
+            "top-k vs ground truth",
+            epoch,
+            path,
+        )
         self.experiment.save_artifact(path.name, path)
 
-    def _save_curve_visualization(self) -> None:
-        path = self.experiment.root / "logs" / "training-curves.png"
-        figure, axis = plt.subplots(figsize=(8, 5))
-        for name, values in self.history.items():
-            axis.plot(range(1, len(values) + 1), values, marker="o", label=name)
-        axis.set(xlabel="epoch", ylabel="value", title="RF-DETR Datasphere smoke run")
+    def _save_curve_visualizations(self, epoch: int) -> None:
+        self._save_loss_curves(epoch)
+        self._save_detection_metric_curves(epoch)
+
+    def _save_loss_curves(self, epoch: int) -> None:
+        path = self.experiment.root / "logs" / "loss-curves.png"
+        loss_names = ("loss_total", "loss_cls", "loss_bbox", "loss_giou")
+        figure, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
+        for axis, name in zip(axes.flat, loss_names, strict=True):
+            for split, color in (("train", "tab:blue"), ("validation", "tab:orange")):
+                values = self.history.get(f"{split}/{name}", [])
+                if values:
+                    axis.plot(
+                        range(1, len(values) + 1),
+                        values,
+                        marker="o",
+                        color=color,
+                        label=split,
+                    )
+            axis.set(title=name, ylabel="loss")
+            axis.grid(True, alpha=0.25)
+            axis.legend()
+        for axis in axes[-1]:
+            axis.set_xlabel("epoch")
+        figure.suptitle("RF-DETR training and validation losses")
+        figure.tight_layout()
+        figure.savefig(path, dpi=160)
+        plt.close(figure)
+        self.experiment.log_image("training curves", "losses", epoch, path)
+        self.experiment.save_artifact(path.name, path)
+
+    def _save_detection_metric_curves(self, epoch: int) -> None:
+        metric_names = (
+            ("map", "mAP"),
+            ("map50", "mAP@50"),
+            ("map75", "mAP@75"),
+            ("mar", "mAR"),
+            ("mar_100", "mAR@100"),
+        )
+        available = [
+            (name, title)
+            for name, title in metric_names
+            if self.history.get(f"validation/{name}")
+        ]
+        if not available:
+            return
+        path = self.experiment.root / "logs" / "validation-detection-metrics.png"
+        figure, axis = plt.subplots(figsize=(9, 5))
+        for name, title in available:
+            values = self.history[f"validation/{name}"]
+            axis.plot(range(1, len(values) + 1), values, marker="o", label=title)
+        axis.set(
+            xlabel="epoch",
+            ylabel="score",
+            title="RF-DETR validation detection metrics",
+            ylim=(0, 1),
+        )
         axis.grid(True, alpha=0.25)
         axis.legend()
         figure.tight_layout()
         figure.savefig(path, dpi=160)
         plt.close(figure)
+        self.experiment.log_image("validation curves", "detection metrics", epoch, path)
         self.experiment.save_artifact(path.name, path)
 
     def _remember(
         self, train_metrics: dict[str, float], validation_metrics: dict[str, float]
     ) -> None:
-        for name in ("loss_total",):
-            self.history[f"train/{name}"].append(train_metrics[name])
-            self.history[f"validation/{name}"].append(validation_metrics[name])
-        self.history["validation/map"].append(validation_metrics["map"])
+        for name in ("loss_total", "loss_cls", "loss_bbox", "loss_giou"):
+            if name in train_metrics:
+                self.history[f"train/{name}"].append(train_metrics[name])
+            if name in validation_metrics:
+                self.history[f"validation/{name}"].append(validation_metrics[name])
+        for name in ("map", "map50", "map75", "mar", "mar_100"):
+            if name in validation_metrics:
+                self.history[f"validation/{name}"].append(validation_metrics[name])
 
 
 def _move_batch(
@@ -287,31 +401,97 @@ def _cpu_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _render_predictions(
-    batch: DetectionBatch, output: DetectorOutput, path: Path
+    batch: DetectionBatch, output: DetectorOutput, path: Path, top_k: int = 12
 ) -> None:
     image = batch.images[0].detach().float().cpu().permute(1, 2, 0).clamp(0, 1)
+    target_boxes = batch.targets[0]["boxes"].detach().cpu()
+    target_labels = batch.targets[0].get("labels")
     height, width = image.shape[:2]
-    figure, axis = plt.subplots(figsize=(10, 6))
+    scores, labels = output.logits[0].detach().sigmoid().max(dim=-1)
+    top_indices = scores.topk(min(top_k, len(scores))).indices.cpu()
+    boxes = output.boxes[0].detach().cpu()[top_indices]
+    confidences = scores.cpu()[top_indices]
+    classes = labels.cpu()[top_indices]
+    best_ious = _best_ious(boxes, target_boxes)
+
+    figure, (axis, score_axis) = plt.subplots(
+        1,
+        2,
+        figsize=(14, 7),
+        gridspec_kw={"width_ratios": (3, 1)},
+    )
     axis.imshow(image)
-    for box in batch.targets[0]["boxes"].detach().cpu():
-        _draw_box(axis, box, width, height, "lime", "ground truth")
-    score, label = output.logits[0].detach().sigmoid().max(dim=-1)
-    for box, confidence, class_id in zip(
-        output.boxes[0].detach().cpu(), score.cpu(), label.cpu(), strict=True
+    for index, box in enumerate(target_boxes):
+        label = "GT"
+        if isinstance(target_labels, Tensor):
+            label = f"GT {int(target_labels[index])}"
+        _draw_box(axis, box, width, height, "lime", label)
+    for rank, (box, confidence, class_id, best_iou) in enumerate(
+        zip(boxes, confidences, classes, best_ious, strict=True), start=1
     ):
-        if float(confidence) >= 0.25:
-            _draw_box(
-                axis,
-                box,
-                width,
-                height,
-                "red",
-                f"{int(class_id)}: {float(confidence):.2f}",
-            )
-    axis.set(title="Green: target; red: RF-DETR prediction", xticks=[], yticks=[])
+        _draw_box(
+            axis,
+            box,
+            width,
+            height,
+            "red",
+            f"#{rank} {int(class_id)} "
+            f"{float(confidence):.2f} IoU {float(best_iou):.2f}",
+        )
+    mean_iou = float(best_ious.mean()) if len(best_ious) else 0.0
+    matched = int((best_ious >= 0.5).sum())
+    axis.set(
+        title=(
+            f"Green: ground truth; red: top-{len(boxes)} predictions\n"
+            f"best-IoU mean={mean_iou:.3f}, IoU@0.50={matched}/{len(boxes)}"
+        ),
+        xticks=[],
+        yticks=[],
+    )
+    ranks = list(range(len(confidences), 0, -1))
+    score_axis.barh(ranks, confidences.numpy(), color="tab:red", alpha=0.8)
+    score_axis.set(
+        title="Top-K confidence",
+        xlabel="confidence",
+        ylabel="rank",
+        xlim=(0, 1),
+        yticks=ranks,
+    )
+    score_axis.grid(True, axis="x", alpha=0.25)
+    for rank, confidence, class_id, best_iou in zip(
+        ranks, confidences, classes, best_ious, strict=True
+    ):
+        score_axis.text(
+            min(float(confidence) + 0.02, 0.86),
+            rank,
+            f"c{int(class_id)} / {float(best_iou):.2f}",
+            va="center",
+            fontsize=8,
+        )
     figure.tight_layout()
     figure.savefig(path, dpi=160)
     plt.close(figure)
+
+
+def _best_ious(predictions: Tensor, targets: Tensor) -> Tensor:
+    if len(predictions) == 0 or len(targets) == 0:
+        return torch.zeros(len(predictions))
+    prediction_xyxy = _cxcywh_to_xyxy(predictions)
+    target_xyxy = _cxcywh_to_xyxy(targets)
+    top_left = torch.maximum(prediction_xyxy[:, None, :2], target_xyxy[None, :, :2])
+    bottom_right = torch.minimum(prediction_xyxy[:, None, 2:], target_xyxy[None, :, 2:])
+    intersection = (bottom_right - top_left).clamp(min=0).prod(dim=-1)
+    prediction_area = (
+        (prediction_xyxy[:, 2:] - prediction_xyxy[:, :2]).clamp(min=0).prod(dim=-1)
+    )
+    target_area = (target_xyxy[:, 2:] - target_xyxy[:, :2]).clamp(min=0).prod(dim=-1)
+    union = prediction_area[:, None] + target_area[None, :] - intersection
+    return (intersection / union.clamp_min(1e-6)).max(dim=1).values
+
+
+def _cxcywh_to_xyxy(boxes: Tensor) -> Tensor:
+    center, size = boxes[..., :2], boxes[..., 2:]
+    return torch.cat((center - size / 2, center + size / 2), dim=-1)
 
 
 def _draw_box(

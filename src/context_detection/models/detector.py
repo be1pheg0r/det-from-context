@@ -45,8 +45,19 @@ class DetectorAdapter(nn.Module, ABC):
         """
         return None
 
-    def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
-        """Режимы: замороженный backbone / только context-блок / полный FT."""
+    def freeze(
+        self,
+        backbone: bool | None = None,
+        decoder: bool = False,
+        *,
+        encoder: bool | None = None,
+        bbox_embed: bool = False,
+        cls_embed: bool = False,
+    ) -> None:
+        """Режимы заморозки detector-блоков.
+
+        ``backbone`` остаётся legacy-алиасом для ``encoder``.
+        """
         raise NotImplementedError
 
     @property
@@ -176,8 +187,18 @@ class DummyDetector(DetectorAdapter):
         flat = context.images.flatten(0, 1)  # [B*K, C, H, W]
         return [f.unflatten(0, (b, k)) for f in self._features(flat)]
 
-    def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
+    def freeze(
+        self,
+        backbone: bool | None = None,
+        decoder: bool = False,
+        *,
+        encoder: bool | None = None,
+        bbox_embed: bool = False,
+        cls_embed: bool = False,
+    ) -> None:
+        del bbox_embed, cls_embed
+        freeze_encoder: bool = encoder if encoder is not None else bool(backbone)
         for p in (*self.stem.parameters(), *self.scales.parameters()):
-            p.requires_grad_(not backbone)
+            p.requires_grad_(not freeze_encoder)
         for p in self.decoder.parameters():
             p.requires_grad_(not decoder)

@@ -1,4 +1,5 @@
 import json
+from math import isfinite
 from pathlib import Path
 
 import cv2
@@ -7,18 +8,35 @@ from torch.utils.data import Dataset
 
 
 class BDD100KDataset(Dataset):
-    def __init__(self, config):
-        self.images_dir = Path(config["dataset"]["images_dir"])
-        self.annotations_dir = Path(config["dataset"]["annotations_dir"])
+    """BDD100K-style dataset built from explicit image and annotation folders."""
 
-        self.target_width = config["dataset"]["image_size"]["width"]
-        self.target_height = config["dataset"]["image_size"]["height"]
+    def __init__(self, images_dir, annotations_dir, config):
+        """Build the dataset from independent image and JSON annotation folders.
 
-        self.image_extensions = set(config["dataset"]["image_extensions"])
+        ``config`` contains parsing and preprocessing options only.  It does
+        not control where either dataset directory is located.
 
-        self.classes = config["classes"]
+        The component config stores dataset-specific fields under
+        ``dataset``. Older flat configs still pass them at the top level,
+        so we accept both layouts for compatibility.
+        """
+        self.images_dir = Path(images_dir)
+        self.annotations_dir = Path(annotations_dir)
 
-        self.normalize_boxes = config["normalize_boxes"]
+        dataset_config = config.get("dataset", config)
+
+        image_size = dataset_config.get("image_size", {})
+        if not isinstance(image_size, dict):
+            image_size = {"width": image_size, "height": image_size}
+
+        self.target_width = image_size.get("width")
+        self.target_height = image_size.get("height")
+
+        self.image_extensions = set(dataset_config.get("image_extensions", []))
+        self.classes = config.get("classes", dataset_config.get("classes", {}))
+        self.normalize_boxes = dataset_config.get(
+            "normalize_boxes", config.get("normalize_boxes", False)
+        )
         self.samples = self._build_samples()
 
     def _build_samples(self):
@@ -72,10 +90,11 @@ class BDD100KDataset(Dataset):
         with open(annotation_path, encoding="utf-8") as f:
             annotation = json.load(f)
 
-        # Пока предполагаем один frame на изображение
-        frame = annotation["frames"][0]
-
-        objects = frame.get("objects", [])
+        # Одному изображению соответствует первый frame.  BDD100K JSON может
+        # также содержать polygon-only objects without ``box2d``.
+        frames = annotation.get("frames", [])
+        frame = frames[0] if isinstance(frames, list) and frames else {}
+        objects = frame.get("objects", []) if isinstance(frame, dict) else []
 
         # -------------------------
         # 3. Получаем bbox
@@ -85,18 +104,31 @@ class BDD100KDataset(Dataset):
         labels = []
 
         for obj in objects:
-            category = obj["category"]
+            if not isinstance(obj, dict):
+                continue
+            category = obj.get("category")
 
             # Пропускаем неизвестные классы
             if category not in self.classes:
                 continue
 
-            box = obj["box2d"]
-
-            x1 = box["x1"]
-            y1 = box["y1"]
-            x2 = box["x2"]
-            y2 = box["y2"]
+            # Lines, drivable areas and other BDD100K objects may contain
+            # ``poly2d`` only.  RF-DETR trains on finite, non-empty boxes.
+            box = obj.get("box2d")
+            if not isinstance(box, dict):
+                continue
+            try:
+                x1, y1, x2, y2 = (float(box[key]) for key in ("x1", "y1", "x2", "y2"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not all(isfinite(value) for value in (x1, y1, x2, y2)):
+                continue
+            x1 = min(max(x1, 0.0), original_width)
+            x2 = min(max(x2, 0.0), original_width)
+            y1 = min(max(y1, 0.0), original_height)
+            y2 = min(max(y2, 0.0), original_height)
+            if x2 <= x1 or y2 <= y1:
+                continue
 
             boxes.append([x1, y1, x2, y2])
             labels.append(self.classes[category])
@@ -153,9 +185,9 @@ class BDD100KDataset(Dataset):
         # -------------------------
 
         target = {
-            "boxes": torch.tensor(resized_boxes, dtype=torch.float32),
+            "boxes": torch.tensor(resized_boxes, dtype=torch.float32).reshape(-1, 4),
             "labels": torch.tensor(labels, dtype=torch.long),
-            "image_id": idx,
+            "image_id": torch.tensor(idx, dtype=torch.long),
         }
 
         return image, target

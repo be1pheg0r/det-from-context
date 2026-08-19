@@ -14,21 +14,20 @@ data:
   context_strategy: empty
   clip_len: 1
   image_size: 512
-  augmentations: []
+  augmentations: [horizontal_flip, color_jitter]
 
 detector:
   name: rfdetr
   component_path: ${oc.env:RFDETR_COMPONENT_PATH,models/rfdetr}
   config_path: models/rfdetr/config.yaml
-  variant: small
+  variant: large
   weights: null
   # Worker additionally freezes the transformer encoder and every non-class
   # parameter; only RF-DETR's class_embed is fine-tuned.
   freeze_backbone: true
-  freeze_decoder: true
+  freeze_decoder: false
   num_queries: 300
   dim: 256
-  num_classes: 31
   num_heads: 8
   num_decoder_layers: 3
 
@@ -49,12 +48,16 @@ context:
   horizon: 0
 
 train:
-  epochs: 2
+  epochs: 3
   lr: 0.0001
-  batch_size: 128
+  batch_size: 64
   grad_accum: 2
   optimizer: adamw
   weight_decay: 0.0001
+  warmup_epochs: 2
+  head_lr_multiplier: 1.0
+  decoder_lr_multiplier: 0.5
+  backbone_lr_multiplier: 0.05
   num_workers: 8
   seed: 42
   amp: true
@@ -64,7 +67,7 @@ train:
 validation:
   metrics: [map, map_50]
   every_n_epochs: 1
-  batch_size: 128
+  batch_size: 64
 
 logging:
   level: INFO

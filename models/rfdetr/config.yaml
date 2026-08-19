@@ -3,6 +3,14 @@ name: rfdetr
 # Публичный upstream-класс: nano | small | medium | large.
 variant: small
 
+# Дефолтные режимы заморозки блоков адаптера RF-DETR.
+# Эксперимент может переопределить их через detector.freeze_*.
+freeze:
+  encoder: true
+  decoder: false
+  bbox_embed: false
+  cls_embed: false
+
 # Поля ниже передаются напрямую в официальный RFDETRSmall(ModelConfig).
 # Неизвестные ключи и несовместимые значения отклоняет upstream Pydantic-схема.
 model:

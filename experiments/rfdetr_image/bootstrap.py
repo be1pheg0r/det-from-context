@@ -21,6 +21,24 @@ def main() -> None:
     for path in (project_root / "src", experiment_dir):
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
+    # ``python: auto`` may resolve the unpinned ``torch`` project dependency
+    # to a CPU wheel even when DataSphere allocated a GPU instance.  Install a
+    # CUDA-enabled wheel explicitly before installing the editable project.
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-cache-dir",
+            "torch==2.7.1",
+            "torchvision==0.22.1",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu126",
+        ],
+        check=True,
+    )
     subprocess.run(
         [sys.executable, "-m", "pip", "install", "-e", "."],
         check=True,

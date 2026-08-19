@@ -79,8 +79,11 @@ class DetectorConfig(_Section):
     config_path: str | None = None
     variant: str | None = None
     weights: str | None = None
-    freeze_backbone: bool = False
-    freeze_decoder: bool = False
+    freeze_backbone: bool | None = None
+    freeze_decoder: bool | None = None
+    freeze_encoder: bool | None = None
+    freeze_bbox_embed: bool | None = None
+    freeze_cls_embed: bool | None = None
     num_queries: int = Field(100, gt=0)
     dim: int = Field(64, gt=0)
     num_classes: int = Field(31, gt=0)
@@ -136,6 +139,10 @@ class TrainConfig(_Section):
     grad_accum: int = Field(1, ge=1)
     optimizer: OptimizerName = OptimizerName.ADAMW
     weight_decay: float = Field(1e-4, ge=0.0)
+    warmup_epochs: int = Field(2, ge=0)
+    head_lr_multiplier: float = Field(1.0, gt=0.0)
+    decoder_lr_multiplier: float = Field(0.5, gt=0.0)
+    backbone_lr_multiplier: float = Field(0.05, gt=0.0)
     num_workers: int = Field(4, ge=0)
     seed: int = Field(42, ge=0)
     amp: bool = True

@@ -16,6 +16,10 @@ detector:
   component_path: models/rfdetr
   config_path: models/rfdetr/config.yaml
   freeze_backbone: true
+  freeze_decoder: false
+  freeze_encoder: null
+  freeze_bbox_embed: null
+  freeze_cls_embed: null
   num_queries: 300
   dim: 256
 

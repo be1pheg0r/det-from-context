@@ -171,7 +171,7 @@ class RFDetrAdapter(DetectorAdapter):
             raise TypeError("RF-DETR forward обязан вернуть mapping")
         predictions: Mapping[str, Any] = cast("Mapping[str, Any]", raw_output)
         logits: Tensor = _prediction_tensor(predictions, "pred_logits")
-        boxes: Tensor = _prediction_tensor(predictions, "pred_boxes")
+        boxes: Tensor = _normalized_prediction_boxes(predictions)
         query_layers: Tensor = capture.require_decoder_queries()
         decoder_layers: list[dict[str, Tensor]] = _decoder_layers(
             predictions,
@@ -208,11 +208,30 @@ class RFDetrAdapter(DetectorAdapter):
             for feature in _backbone_feature_tensors(raw_features)
         ]
 
-    def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
-        """Заморозить выбранные upstream-части детектора."""
-        _set_trainable(_child_module(self.model, "backbone"), not backbone)
-        transformer: nn.Module = _child_module(self.model, "transformer")
-        _set_trainable(_child_module(transformer, "decoder"), not decoder)
+    def freeze(
+        self,
+        backbone: bool | None = None,
+        decoder: bool = False,
+        *,
+        encoder: bool | None = None,
+        bbox_embed: bool = False,
+        cls_embed: bool = False,
+    ) -> None:
+        """Заморозить/разморозить выбранные upstream-блоки детектора."""
+        freeze_encoder: bool = encoder if encoder is not None else bool(backbone)
+        for path in ("backbone", "transformer.encoder"):
+            module = _find_module(self.model, path)
+            if module is not None:
+                _set_trainable(module, not freeze_encoder)
+        _set_trainable(
+            _resolve_module(self.model, ("transformer.decoder", "decoder")), not decoder
+        )
+        _set_trainable(
+            _resolve_module(self.model, ("bbox_embed", "box_embed")), not bbox_embed
+        )
+        _set_trainable(
+            _resolve_module(self.model, ("cls_embed", "class_embed")), not cls_embed
+        )
 
     def freeze_for_class_adaptation(self) -> None:
         """Оставить обучаемой только class-specific prediction head.
@@ -221,7 +240,7 @@ class RFDetrAdapter(DetectorAdapter):
         backbone и весь transformer, включая encoder, остаются фиксированными.
         """
         _set_trainable(self.model, False)
-        _set_trainable(_child_module(self.model, "class_embed"), True)
+        _set_trainable(_resolve_module(self.model, ("cls_embed", "class_embed")), True)
 
     def _build_upstream(
         self,
@@ -267,6 +286,32 @@ def _child_module(owner: nn.Module, name: str) -> nn.Module:
     if not isinstance(child, nn.Module):
         raise TypeError(f"RF-DETR {type(owner).__name__}.{name} должен быть nn.Module")
     return child
+
+
+def _child_module_path(owner: nn.Module, path: str) -> nn.Module:
+    module: nn.Module = owner
+    for name in path.split("."):
+        module = _child_module(module, name)
+    return module
+
+
+def _resolve_module(owner: nn.Module, candidates: Sequence[str]) -> nn.Module:
+    for path in candidates:
+        try:
+            return _child_module_path(owner, path)
+        except TypeError:
+            continue
+    tried: str = ", ".join(candidates)
+    raise TypeError(
+        f"RF-DETR {type(owner).__name__} не содержит ожидаемый блок: {tried}"
+    )
+
+
+def _find_module(owner: nn.Module, path: str) -> nn.Module | None:
+    try:
+        return _child_module_path(owner, path)
+    except TypeError:
+        return None
 
 
 def _backbone_feature_tensors(output: object) -> list[Tensor]:
@@ -315,8 +360,8 @@ def _decoder_layers(
         {
             "queries": layer_queries,
             "logits": _prediction_tensor(layer, "pred_logits"),
-            "boxes": _prediction_tensor(layer, "pred_boxes"),
-            "reference_points": _prediction_tensor(layer, "pred_boxes"),
+            "boxes": _normalized_prediction_boxes(layer),
+            "reference_points": _normalized_prediction_boxes(layer),
         }
         for layer, layer_queries in zip(
             layer_predictions,
@@ -324,6 +369,19 @@ def _decoder_layers(
             strict=True,
         )
     ]
+
+
+def _normalized_prediction_boxes(predictions: Mapping[str, Any]) -> Tensor:
+    """Convert upstream bbox logits to normalized ``cxcywh`` when needed.
+
+    RF-DETR releases differ: some apply sigmoid in the model forward, while
+    others expose the logits consumed by their own criterion.  The project
+    contract always requires coordinates in ``[0, 1]``.
+    """
+    boxes = _prediction_tensor(predictions, "pred_boxes")
+    if boxes.numel() and (boxes.detach().amin() < 0 or boxes.detach().amax() > 1):
+        return boxes.sigmoid()
+    return boxes
 
 
 def _set_trainable(module: nn.Module, trainable: bool) -> None:

@@ -75,6 +75,10 @@ class ExperimentTracker(ABC):
         """Загрузить артефакт запуска."""
 
     @abstractmethod
+    def log_image(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать изображение в мониторинг запуска."""
+
+    @abstractmethod
     def complete(self) -> None:
         """Отметить запуск успешно завершённым."""
 
@@ -95,6 +99,9 @@ class LocalTracker(ExperimentTracker):
 
     def upload_artifact(self, name: str, path: Path) -> None:
         """Не дублировать локальный артефакт."""
+
+    def log_image(self, title: str, series: str, step: int, path: Path) -> None:
+        """Не дублировать локальное изображение."""
 
     def complete(self) -> None:
         """Локальный статус обновляет сам запуск."""
@@ -151,6 +158,16 @@ class ClearMLTracker(ExperimentTracker):
             name=name,
             artifact_object=str(path),
             wait_on_upload=True,
+        )
+
+    def log_image(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать изображение в ClearML Debug Samples."""
+        self._logger.report_image(
+            title=title,
+            series=series,
+            iteration=step,
+            local_path=str(path),
+            max_image_history=-1,
         )
 
     def complete(self) -> None:
@@ -278,6 +295,13 @@ class ExperimentRun:
         shutil.copy2(source_path, destination)
         self.tracker.upload_artifact(name, destination)
         return destination
+
+    def log_image(self, title: str, series: str, step: int, path: str | Path) -> None:
+        """Передать изображение tracker-у после проверки локального файла."""
+        source: Path = Path(path).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        self.tracker.log_image(title, series, step, source)
 
     def complete(self, summary: Mapping[str, Any] | None = None) -> None:
         """Зафиксировать итог и успешно закрыть запуск."""
@@ -555,6 +579,11 @@ class ExperimentProtocol:
             if model_component is not None:
                 runtime_config.detector.component_path = str(model_component.root)
                 runtime_config.detector.config_path = str(model_component.config_path)
+            dataset_num_classes = self._dataset_num_classes(
+                experiment.dataset_config_path
+            )
+            if dataset_num_classes is not None:
+                runtime_config.detector.num_classes = dataset_num_classes
             torch.manual_seed(runtime_config.train.seed)
             model: nn.Module = build_registered_model(runtime_config)
             dataloaders: dict[str, DataLoader[Any]] = {}
@@ -606,6 +635,27 @@ class ExperimentProtocol:
                 experiment.save_artifact(artifact_name, artifact)
                 published.append(artifact_name)
         experiment.record_metadata("component_artifacts", published)
+
+    @staticmethod
+    def _dataset_num_classes(config_path: Path) -> int | None:
+        """Return the class count declared by a dataset component, when present."""
+        raw: Any = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+        if not isinstance(raw, dict):
+            raise ValueError(f"{config_path} must contain a mapping")
+        classes: Any = raw.get("classes")
+        if classes is None:
+            return None
+        if not isinstance(classes, dict) or not classes:
+            raise ValueError(f"{config_path}: classes must be a non-empty mapping")
+        class_ids = list(classes.values())
+        if not all(
+            isinstance(class_id, int) and not isinstance(class_id, bool)
+            for class_id in class_ids
+        ):
+            raise ValueError(f"{config_path}: class IDs must be integers")
+        if set(class_ids) != set(range(len(class_ids))):
+            raise ValueError(f"{config_path}: class IDs must be contiguous from 0")
+        return len(class_ids)
 
     def _load_environment(self) -> None:
         env_path: Path = self.project_root / self._ENV_FILE
