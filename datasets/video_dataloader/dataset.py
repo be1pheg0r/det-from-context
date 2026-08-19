@@ -45,6 +45,8 @@ class VideoDataset(Dataset):
 
         self.classes = config["classes"]
 
+        self.normalize_boxes = config["normalize_boxes"]
+
         self.samples = self._build_samples()
 
     # ============================================================
@@ -72,8 +74,8 @@ class VideoDataset(Dataset):
             ".mov",
             ".mkv",
         }
-        from tqdm import tqdm
-        for video_path in tqdm(sorted(self.videos_dir.iterdir())):
+
+        for video_path in sorted(self.videos_dir.iterdir()):
             if video_path.suffix.lower() not in video_extensions:
                 continue
 
@@ -314,21 +316,37 @@ class VideoDataset(Dataset):
         scale_y = self.target_height / original_height
 
         for obj in frame.get("objects", []):
-            category = obj["category"]
-
-            # Неизвестный класс пропускаем
-            if category not in self.classes:
+            category = obj.get("category")
+            if not category or category not in self.classes:
                 continue
 
-            box = obj["box2d"]
+            # 2. Проверяем наличие блока координат
+            box = obj.get("box2d")
+            if not box:
+                continue
+
+            # 3. Проверяем наличие всех нужных точек
+            required_keys = ("x1", "y1", "x2", "y2")
+            if not all(k in box for k in required_keys):
+                continue
 
             x1 = box["x1"] * scale_x
             y1 = box["y1"] * scale_y
             x2 = box["x2"] * scale_x
             y2 = box["y2"] * scale_y
 
-            boxes.append([x1, y1, x2, y2])
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            w = x2 - x1
+            h = y2 - y1
 
+            if self.normalize_boxes:
+                cx /= self.target_width
+                cy /= self.target_height
+                w /= self.target_width
+                h /= self.target_height
+
+            boxes.append([cx, cy, w, h])
             labels.append(self.classes[category])
 
         # ------------------------------------------------

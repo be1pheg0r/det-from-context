@@ -6,13 +6,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 import torch
-from context_detection.data.protocols import DatasetSplit
 from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor
 from torch.utils.data import DataLoader, TensorDataset
 
 from context_detection.config import ExperimentConfig
+from context_detection.data.protocols import DatasetSplit
 
 
 class DatasetSettings(BaseModel):

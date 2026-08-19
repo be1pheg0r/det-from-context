@@ -18,6 +18,7 @@ class BDD100KDataset(Dataset):
 
         self.classes = config["classes"]
 
+        self.normalize_boxes = config["normalize_boxes"]
         self.samples = self._build_samples()
 
     def _build_samples(self):
@@ -84,14 +85,19 @@ class BDD100KDataset(Dataset):
         labels = []
 
         for obj in objects:
-            category = obj["category"]
-
-            # Пропускаем неизвестные классы
-            if category not in self.classes:
+            category = obj.get("category")
+            if not category or category not in self.classes:
                 continue
 
-            box = obj["box2d"]
+            # 2. Проверяем наличие блока координат
+            box = obj.get("box2d")
+            if not box:
+                continue
 
+            # 3. Проверяем наличие всех нужных точек
+            required_keys = ("x1", "y1", "x2", "y2")
+            if not all(k in box for k in required_keys):
+                continue
             x1 = box["x1"]
             y1 = box["y1"]
             x2 = box["x2"]
@@ -121,7 +127,18 @@ class BDD100KDataset(Dataset):
             y1 *= scale_y
             y2 *= scale_y
 
-            resized_boxes.append([x1, y1, x2, y2])
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            w = x2 - x1
+            h = y2 - y1
+
+            if self.normalize_boxes:
+                cx /= self.target_width
+                cy /= self.target_height
+                w /= self.target_width
+                h /= self.target_height
+
+            resized_boxes.append([cx, cy, w, h])
 
         # -------------------------
         # 6. Tensor
