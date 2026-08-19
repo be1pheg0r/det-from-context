@@ -73,6 +73,8 @@ class ImageDataLoaderProtocol:
         # image_size is only a local default for standalone dataloader usage.
         dataset_config["image_size"] = {"width": image_size, "height": image_size}
 
+        dataset_config["image_set"] = "train" if split is DatasetSplit.TRAIN else "val"
+
         self._resolve_paths(raw, Path(config.data.config_path).parent)
         source = BDD100KDataset(
             raw["dataset"]["images_dir"],

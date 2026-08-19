@@ -7,7 +7,7 @@ data:
   context_k: 0
   context_strategy: empty
   clip_len: 1
-  image_size: 704
+  image_size: 512
   augmentations:
   - horizontal_flip
   - color_jitter
@@ -15,7 +15,7 @@ detector:
   name: rfdetr
   component_path: models/rfdetr
   config_path: models/rfdetr/config.yaml
-  variant: large
+  variant: small
   weights: null
   freeze_backbone: true
   freeze_decoder: false

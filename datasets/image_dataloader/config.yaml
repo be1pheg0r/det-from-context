@@ -12,7 +12,9 @@ dataset:
   image_size:
     width: 1280
     height: 720
-  normalize_boxes: true
+  patch_size: 16
+  num_windows: 2
+  multi_scale: false
 
   # Расширения файлов изображений, которые обрабатываем
   image_extensions:
