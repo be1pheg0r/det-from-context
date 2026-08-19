@@ -1,8 +1,10 @@
-# config.yaml
+name: image_dataloader
 
 dataset:
-  images_dir: "../out/images_test_2"
-  annotations_dir: "../out/labels3"
+  # These are independent locations: images and BDD100K JSON annotations do
+  # not have to share a parent directory.  DataSphere supplies both values.
+  images_dir: ${oc.env:IMAGE_DATASET_IMAGES_DIR,../out/images_test_2}
+  annotations_dir: ${oc.env:IMAGE_DATASET_ANNOTATIONS_DIR,../out/labels3}
 
   # Максимальное разрешение изображения.
   # Если исходное изображение больше, оно будет уменьшено
@@ -17,6 +19,13 @@ dataset:
     - ".jpg"
     - ".jpeg"
     - ".png"
+
+# A deterministic split lets the original single-directory dataset be used for
+# a training smoke run without duplicating images. Override paths through the
+# environment on Datasphere (IMAGE_DATASET_IMAGES_DIR and
+# IMAGE_DATASET_ANNOTATIONS_DIR) or edit these two paths for a local run.
+splits:
+  train_fraction: 0.8
 
 
 dataloader:

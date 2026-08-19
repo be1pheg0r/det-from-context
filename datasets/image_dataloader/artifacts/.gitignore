@@ -1,0 +1,3 @@
+# Runtime artifacts for the image_dataloader component are not versioned.
+*
+!.gitignore

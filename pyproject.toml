@@ -14,7 +14,9 @@ dependencies = [
     "clearml",
     "python-dotenv",
     "rfdetr==1.9.0",
-    "datasphere"
+    "datasphere",
+    "opencv-python-headless",
+    "scipy"
 ]
 
 [project.optional-dependencies]

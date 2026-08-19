@@ -33,7 +33,11 @@ def create_dataloader(config):
 
     from dataset import BDD100KDataset
 
-    dataset = BDD100KDataset(config)
+    dataset = BDD100KDataset(
+        config["dataset"]["images_dir"],
+        config["dataset"]["annotations_dir"],
+        config,
+    )
 
     dataloader_config = config["dataloader"]
 

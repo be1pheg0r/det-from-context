@@ -219,6 +219,15 @@ def test_adapter_encodes_context_and_freezes_upstream_parts(
         parameter.requires_grad
         for parameter in adapter.model.transformer.decoder.parameters()
     )
+    adapter.freeze_for_class_adaptation()
+    assert all(
+        parameter.requires_grad for parameter in adapter.model.class_embed.parameters()
+    )
+    assert not any(
+        parameter.requires_grad
+        for name, parameter in adapter.model.named_parameters()
+        if not name.startswith("class_embed")
+    )
 
 
 def test_adapter_validates_variant_and_forwards_weight_path(

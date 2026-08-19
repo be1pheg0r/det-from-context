@@ -214,6 +214,15 @@ class RFDetrAdapter(DetectorAdapter):
         transformer: nn.Module = _child_module(self.model, "transformer")
         _set_trainable(_child_module(transformer, "decoder"), not decoder)
 
+    def freeze_for_class_adaptation(self) -> None:
+        """Оставить обучаемой только class-specific prediction head.
+
+        Используется для дешёвого переноса RF-DETR на новый набор классов:
+        backbone и весь transformer, включая encoder, остаются фиксированными.
+        """
+        _set_trainable(self.model, False)
+        _set_trainable(_child_module(self.model, "class_embed"), True)
+
     def _build_upstream(
         self,
         weights: str | None,
