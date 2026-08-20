@@ -15,7 +15,11 @@ from context_detection.build import build_model
 from context_detection.config import ExperimentConfig
 from context_detection.contracts import ContextBatch, DetectionBatch
 from context_detection.models import rfdetr as rfdetr_module
-from context_detection.models.rfdetr import RFDetrAdapter
+from context_detection.models.rfdetr import (
+    RFDETR_PRETRAINED_RESOLUTIONS,
+    RFDetrAdapter,
+    RFDetrVariant,
+)
 
 
 class _Feature:
@@ -119,7 +123,11 @@ class _Provider:
 
     def __init__(self, **kwargs: object) -> None:
         type(self).last_kwargs = kwargs
-        self.model_config = SimpleNamespace(hidden_dim=4, num_queries=3)
+        self.model_config = SimpleNamespace(
+            hidden_dim=4,
+            num_queries=3,
+            resolution=kwargs["resolution"],
+        )
         self.model = SimpleNamespace(model=_UpstreamModel())
 
 
@@ -147,6 +155,26 @@ def _batch(batch_size: int = 2) -> DetectionBatch:
         timestamp=torch.zeros(batch_size),
         is_sequence_start=torch.ones(batch_size, dtype=torch.bool),
     )
+
+
+def test_adapter_normalizes_upstream_box_logits() -> None:
+    logits = torch.tensor([[[-0.5, 0.0, 1.0, 2.0]]])
+
+    boxes = rfdetr_module._normalized_prediction_boxes({"pred_boxes": logits})
+
+    torch.testing.assert_close(boxes, logits.sigmoid())
+
+
+def test_adapter_uses_upstream_bbox_reparam_box_semantics() -> None:
+    boxes = torch.tensor([[[-0.5, 0.5, 1.5, 0.5]]])
+
+    normalized = rfdetr_module._normalized_prediction_boxes(
+        {"pred_boxes": boxes}, bbox_reparam=True
+    )
+
+    expected_xyxy = rfdetr_module.box_ops.box_cxcywh_to_xyxy(boxes).clamp(0, 1)
+    expected = rfdetr_module.box_ops.box_xyxy_to_cxcywh(expected_xyxy)
+    torch.testing.assert_close(normalized, expected)
 
 
 def test_adapter_without_query_override_matches_upstream(
@@ -188,39 +216,6 @@ def test_adapter_injects_batch_specific_queries(
     assert not torch.equal(output.logits, baseline.logits)
 
 
-def test_adapter_encodes_context_and_freezes_upstream_parts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _install_fake_rfdetr(monkeypatch)
-    adapter = RFDetrAdapter("medium")
-    context = ContextBatch(
-        images=torch.rand(2, 3, 3, 8, 8),
-        valid_mask=torch.ones(2, 3, dtype=torch.bool),
-        time_offsets=torch.ones(2, 3),
-    )
-
-    features = adapter.encode_context_frames(context)
-
-    assert features is not None
-    assert [feature.shape[:3] for feature in features] == [(2, 3, 4), (2, 3, 4)]
-    adapter.freeze(backbone=True, decoder=True)
-    assert not any(
-        parameter.requires_grad for parameter in adapter.model.backbone.parameters()
-    )
-    assert not any(
-        parameter.requires_grad
-        for parameter in adapter.model.transformer.decoder.parameters()
-    )
-    adapter.freeze(backbone=False, decoder=False)
-    assert all(
-        parameter.requires_grad for parameter in adapter.model.backbone.parameters()
-    )
-    assert all(
-        parameter.requires_grad
-        for parameter in adapter.model.transformer.decoder.parameters()
-    )
-
-
 def test_adapter_validates_variant_and_forwards_weight_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -229,9 +224,27 @@ def test_adapter_validates_variant_and_forwards_weight_path(
     adapter = RFDetrAdapter("rfdetr-large", weights="checkpoint.pth")
 
     assert adapter.variant.value == "large"
-    assert _Provider.last_kwargs == {"pretrain_weights": "checkpoint.pth"}
+    assert _Provider.last_kwargs == {
+        "pretrain_weights": "checkpoint.pth",
+        "resolution": 704,
+    }
     with pytest.raises(ValueError, match="неизвестный RF-DETR variant"):
         RFDetrAdapter("base")
+
+
+def test_pretrained_variants_own_their_official_input_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_rfdetr(monkeypatch)
+
+    assert RFDETR_PRETRAINED_RESOLUTIONS == {
+        RFDetrVariant.NANO: 384,
+        RFDetrVariant.SMALL: 512,
+        RFDetrVariant.MEDIUM: 576,
+        RFDetrVariant.LARGE: 704,
+    }
+    with pytest.raises(ValueError, match="resolution is fixed"):
+        RFDetrAdapter("small", model_options={"resolution": 640})
 
 
 def test_rfdetr_directory_component_builds_model_protocol(
@@ -271,6 +284,8 @@ def test_rfdetr_directory_component_builds_model_protocol(
     assert _Provider.last_kwargs["resolution"] == 512
     assert _Provider.last_kwargs["num_classes"] == 31
     assert _Provider.last_kwargs["pretrain_weights"] == "rf-detr-small.pth"
+    backbone = model.detector.model.backbone
+    assert not any(parameter.requires_grad for parameter in backbone.parameters())
 
 
 @pytest.mark.filterwarnings(
@@ -286,7 +301,10 @@ def test_component_config_passes_upstream_model_validation() -> None:
     raw: Any = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     assert isinstance(raw, dict)
 
-    upstream_config = upstream_config_module.RFDETRSmallConfig(**raw["model"])
+    upstream_config = upstream_config_module.RFDETRSmallConfig(
+        **raw["model"],
+        resolution=RFDETR_PRETRAINED_RESOLUTIONS[RFDetrVariant(raw["variant"])],
+    )
 
     assert upstream_config.hidden_dim == 256
     assert upstream_config.num_classes == 31

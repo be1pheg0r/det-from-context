@@ -24,6 +24,18 @@ class RFDetrSettings(BaseModel):
     name: Literal["rfdetr"]
     variant: RFDetrVariant = RFDetrVariant.SMALL
     model: dict[str, Any] = Field(min_length=1)
+    freeze: RFDetrFreezeSettings = Field(default_factory=lambda: RFDetrFreezeSettings())
+
+
+class RFDetrFreezeSettings(BaseModel):
+    """Дефолтные режимы заморозки блоков RF-DETR для component directory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    encoder: bool = False
+    decoder: bool = False
+    bbox_embed: bool = False
+    cls_embed: bool = False
 
 
 class RFDetrProtocol:
@@ -45,10 +57,33 @@ class RFDetrProtocol:
                 f"RF-DETR {settings.variant.value} использует dim={detector.dim}, "
                 f"но experiment config задаёт detector.dim={config.detector.dim}"
             )
-        if config.detector.freeze_backbone or config.detector.freeze_decoder:
+        freeze_encoder: bool = self._resolve_freeze_option(
+            config.detector.freeze_encoder,
+            config.detector.freeze_backbone,
+            settings.freeze.encoder,
+        )
+        freeze_decoder: bool = self._resolve_freeze_option(
+            config.detector.freeze_decoder,
+            None,
+            settings.freeze.decoder,
+        )
+        freeze_bbox_embed: bool = self._resolve_freeze_option(
+            config.detector.freeze_bbox_embed,
+            None,
+            settings.freeze.bbox_embed,
+        )
+        freeze_cls_embed: bool = self._resolve_freeze_option(
+            config.detector.freeze_cls_embed,
+            None,
+            settings.freeze.cls_embed,
+        )
+        if freeze_encoder or freeze_decoder or freeze_bbox_embed or freeze_cls_embed:
             detector.freeze(
-                backbone=config.detector.freeze_backbone,
-                decoder=config.detector.freeze_decoder,
+                backbone=freeze_encoder,
+                encoder=freeze_encoder,
+                decoder=freeze_decoder,
+                bbox_embed=freeze_bbox_embed,
+                cls_embed=freeze_cls_embed,
             )
         return detector
 
@@ -78,6 +113,9 @@ class RFDetrProtocol:
         options: dict[str, Any],
     ) -> dict[str, Any]:
         resolved: dict[str, Any] = dict(options)
+        # The dataset component is the source of truth for the class mapping.
+        # ExperimentProtocol synchronizes this value before building the model.
+        resolved["num_classes"] = config.detector.num_classes
         weights: object = resolved.get("pretrain_weights")
         if weights is None:
             return resolved
@@ -96,6 +134,18 @@ class RFDetrProtocol:
             raise FileNotFoundError(weights_path)
         resolved["pretrain_weights"] = str(weights_path)
         return resolved
+
+    @staticmethod
+    def _resolve_freeze_option(
+        explicit: bool | None,
+        legacy: bool | None,
+        component_default: bool,
+    ) -> bool:
+        if explicit is not None:
+            return explicit
+        if legacy is not None:
+            return legacy
+        return component_default
 
 
 PROTOCOL: RFDetrProtocol = RFDetrProtocol()

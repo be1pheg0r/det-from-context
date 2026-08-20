@@ -225,6 +225,3 @@ edits/
 
 # Experiment results
 /outputs/
-
-job_config.yaml
-test_job.py

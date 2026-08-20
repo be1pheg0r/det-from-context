@@ -34,3 +34,14 @@ Worker принимает `ExperimentRun` и `ExperimentConfig`, пишет ск
 создаёт ClearML Task, затем строит стандартные `DataLoader`/`nn.Module` endpoints
 и передаёт их worker через `ExperimentComponents`. Runtime artifacts
 компонентов копируются в запуск и публикуются в ClearML автоматически.
+
+Снимок directory component включает все `.py`, `.yaml`, `.yml` и `.md` файлы,
+кроме `artifacts/` и `__pycache__/`. Поэтому reader, dataset, settings и прочие
+вспомогательные модули воспроизводятся вместе с `provider.py`, а секретный `.env`
+по-прежнему запрещён.
+
+RF-DETR image experiment дополнительно сохраняет `dataset-splits.json` с точным
+составом train/validation/test и SHA-256, диагностические фигуры, runtime-метрики и
+retained checkpoints. Все сообщения пишутся одновременно в live-консоль и
+`logs/experiment.log`; перед завершением или ошибкой log принудительно сбрасывается
+и загружается в ClearML.

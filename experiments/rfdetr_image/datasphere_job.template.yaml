@@ -1,0 +1,43 @@
+# Rendered by submit_datasphere.py. The S3 connector ID is distinct from the
+# DataSphere project ID.
+name: rfdetr-image-native-finetune
+desc: Three-epoch V100 RF-DETR fine-tuning with native training and ClearML diagnostics.
+cmd: python3 experiments/rfdetr_image/bootstrap.py --archive ${PROJECT_ARCHIVE}
+
+# ``python: auto`` resolves third-party dependencies.  The source directories
+# are explicit inputs because RF-DETR/data providers are loaded dynamically at
+# runtime and cannot be discovered by static import analysis.
+inputs:
+  - "__PROJECT_ARCHIVE__": PROJECT_ARCHIVE
+
+env:
+  python:
+    type: auto
+    root-paths:
+      - experiments/rfdetr_image/bootstrap.py
+  vars:
+    - CLEARML_API_ACCESS_KEY
+    - CLEARML_API_SECRET_KEY
+    - CLEARML_API_HOST
+    - CLEARML_WEB_HOST
+    - CLEARML_FILES_HOST
+    - IMAGE_DATASET_IMAGES_DIR: __IMAGE_DATASET_IMAGES_DIR__
+    - IMAGE_DATASET_ANNOTATIONS_DIR: __IMAGE_DATASET_ANNOTATIONS_DIR__
+    - RFDETR_OUTPUT_ROOT: __RFDETR_OUTPUT_ROOT__
+    - PYTHONPATH: src
+    - PYTHONUNBUFFERED: "1"
+
+# Data and all run artifacts (checkpoints, metrics and figures) use this mount.
+s3-mounts:
+  - __S3_CONNECTOR_ID__
+
+flags:
+  - attach-project-disk
+cloud-instance-types:
+  - g1.1  # 1 x NVIDIA Tesla V100, 8 vCPU
+working-storage:
+  type: SSD
+  size: 150Gb
+graceful-shutdown:
+  signal: SIGTERM
+  timeout: 120s

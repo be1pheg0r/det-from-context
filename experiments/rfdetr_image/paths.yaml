@@ -1,0 +1,10 @@
+# All DataSphere filesystem paths for this experiment live here.
+# Change only this file when the Object Storage layout changes.
+s3:
+  connector_id: bt17f0k57rfieh6jugr8
+
+data:
+  images_dir: /job/s3/${s3.connector_id}/IMAGES_TRAIN
+  annotations_dir: /job/s3/${s3.connector_id}/bdd100k_downloads/labels/train
+
+output_root: /job/s3/${s3.connector_id}/rfdetr-image-runs

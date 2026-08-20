@@ -6,8 +6,9 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from importlib import import_module
 from types import ModuleType
-from typing import Any, cast
+from typing import Any, Final, cast
 
+from rfdetr.utilities import box_ops
 from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 
@@ -27,6 +28,21 @@ class RFDetrVariant(StrEnum):
     def upstream_class_name(self) -> str:
         """Имя публичного класса варианта в пакете :mod:`rfdetr`."""
         return f"RFDETR{self.value.title()}"
+
+
+# Official input sizes of the released RF-DETR detection checkpoints.
+RFDETR_PRETRAINED_RESOLUTIONS: Final[dict[RFDetrVariant, int]] = {
+    RFDetrVariant.NANO: 384,
+    RFDetrVariant.SMALL: 512,
+    RFDetrVariant.MEDIUM: 576,
+    RFDetrVariant.LARGE: 704,
+}
+
+
+def rfdetr_pretrained_resolution(variant: str | RFDetrVariant) -> int:
+    """Return the fixed input resolution for an official pretrained variant."""
+    parsed = variant if isinstance(variant, RFDetrVariant) else _parse_variant(variant)
+    return RFDETR_PRETRAINED_RESOLUTIONS[parsed]
 
 
 class _RFDetrForwardCapture:
@@ -127,6 +143,7 @@ class RFDetrAdapter(DetectorAdapter):
     ) -> None:
         super().__init__()
         self.variant: RFDetrVariant = _parse_variant(variant)
+        self.input_resolution: int = rfdetr_pretrained_resolution(self.variant)
         upstream: object = self._build_upstream(weights, model_options)
         model_context: object = getattr(upstream, "model", None)
         model: object = getattr(model_context, "model", None)
@@ -139,6 +156,7 @@ class RFDetrAdapter(DetectorAdapter):
         if not isinstance(hidden_dim, int) or not isinstance(num_queries, int):
             raise TypeError("RF-DETR model_config не содержит hidden_dim/num_queries")
         self.model: nn.Module = model
+        self.model_config: Any = model_config
         self._dim: int = hidden_dim
         self.num_queries: int = num_queries
 
@@ -171,7 +189,10 @@ class RFDetrAdapter(DetectorAdapter):
             raise TypeError("RF-DETR forward обязан вернуть mapping")
         predictions: Mapping[str, Any] = cast("Mapping[str, Any]", raw_output)
         logits: Tensor = _prediction_tensor(predictions, "pred_logits")
-        boxes: Tensor = _prediction_tensor(predictions, "pred_boxes")
+        boxes: Tensor = _normalized_prediction_boxes(
+            predictions,
+            bbox_reparam=bool(getattr(self.model_config, "bbox_reparam", False)),
+        )
         query_layers: Tensor = capture.require_decoder_queries()
         decoder_layers: list[dict[str, Tensor]] = _decoder_layers(
             predictions,
@@ -183,6 +204,7 @@ class RFDetrAdapter(DetectorAdapter):
             for key, value in predictions.items()
             if key not in {"pred_logits", "pred_boxes", "aux_outputs"}
         }
+        aux["upstream_outputs"] = predictions
         return DetectorOutput(
             logits=logits,
             boxes=boxes,
@@ -208,11 +230,33 @@ class RFDetrAdapter(DetectorAdapter):
             for feature in _backbone_feature_tensors(raw_features)
         ]
 
-    def freeze(self, backbone: bool = True, decoder: bool = False) -> None:
-        """Заморозить выбранные upstream-части детектора."""
-        _set_trainable(_child_module(self.model, "backbone"), not backbone)
-        transformer: nn.Module = _child_module(self.model, "transformer")
-        _set_trainable(_child_module(transformer, "decoder"), not decoder)
+    def freeze(
+        self,
+        backbone: bool | None = None,
+        decoder: bool = False,
+        *,
+        encoder: bool | None = None,
+        bbox_embed: bool = False,
+        cls_embed: bool = False,
+    ) -> None:
+        """Заморозить/разморозить выбранные upstream-блоки детектора."""
+        freeze_backbone = bool(backbone)
+        freeze_encoder = encoder if encoder is not None else freeze_backbone
+        backbone_module = _find_module(self.model, "backbone")
+        if backbone_module is not None:
+            _set_trainable(backbone_module, not freeze_backbone)
+        encoder_module = _find_module(self.model, "transformer.encoder")
+        if encoder_module is not None:
+            _set_trainable(encoder_module, not freeze_encoder)
+        _set_trainable(
+            _resolve_module(self.model, ("transformer.decoder", "decoder")), not decoder
+        )
+        _set_trainable(
+            _resolve_module(self.model, ("bbox_embed", "box_embed")), not bbox_embed
+        )
+        _set_trainable(
+            _resolve_module(self.model, ("cls_embed", "class_embed")), not cls_embed
+        )
 
     def _build_upstream(
         self,
@@ -232,6 +276,12 @@ class RFDetrAdapter(DetectorAdapter):
             )
         factory: Callable[..., object] = cast("Callable[..., object]", provider)
         options: dict[str, Any] = dict(model_options or {})
+        if "resolution" in options:
+            raise ValueError(
+                "RF-DETR resolution is fixed by the pretrained variant and must not "
+                "be set in model options"
+            )
+        options["resolution"] = self.input_resolution
         if weights is not None:
             configured_weights: object = options.get("pretrain_weights")
             if configured_weights is not None and configured_weights != weights:
@@ -258,6 +308,32 @@ def _child_module(owner: nn.Module, name: str) -> nn.Module:
     if not isinstance(child, nn.Module):
         raise TypeError(f"RF-DETR {type(owner).__name__}.{name} должен быть nn.Module")
     return child
+
+
+def _child_module_path(owner: nn.Module, path: str) -> nn.Module:
+    module: nn.Module = owner
+    for name in path.split("."):
+        module = _child_module(module, name)
+    return module
+
+
+def _resolve_module(owner: nn.Module, candidates: Sequence[str]) -> nn.Module:
+    for path in candidates:
+        try:
+            return _child_module_path(owner, path)
+        except TypeError:
+            continue
+    tried: str = ", ".join(candidates)
+    raise TypeError(
+        f"RF-DETR {type(owner).__name__} не содержит ожидаемый блок: {tried}"
+    )
+
+
+def _find_module(owner: nn.Module, path: str) -> nn.Module | None:
+    try:
+        return _child_module_path(owner, path)
+    except TypeError:
+        return None
 
 
 def _backbone_feature_tensors(output: object) -> list[Tensor]:
@@ -306,8 +382,8 @@ def _decoder_layers(
         {
             "queries": layer_queries,
             "logits": _prediction_tensor(layer, "pred_logits"),
-            "boxes": _prediction_tensor(layer, "pred_boxes"),
-            "reference_points": _prediction_tensor(layer, "pred_boxes"),
+            "boxes": _normalized_prediction_boxes(layer),
+            "reference_points": _normalized_prediction_boxes(layer),
         }
         for layer, layer_queries in zip(
             layer_predictions,
@@ -315,6 +391,26 @@ def _decoder_layers(
             strict=True,
         )
     ]
+
+
+def _normalized_prediction_boxes(
+    predictions: Mapping[str, Any], *, bbox_reparam: bool = False
+) -> Tensor:
+    """Return project-contract boxes using RF-DETR's own box semantics.
+
+    RF-DETR with ``bbox_reparam=True`` can emit unbounded normalized ``cxcywh``
+    values.  Its official postprocessor converts them to ``xyxy`` and clamps to
+    image bounds.  Mirror that operation on the unit square for the local
+    ``DetectorOutput`` contract while keeping the untouched upstream mapping in
+    ``aux["upstream_outputs"]`` for the native criterion and postprocessor.
+    """
+    boxes = _prediction_tensor(predictions, "pred_boxes")
+    if not boxes.numel() or (boxes.detach().amin() >= 0 and boxes.detach().amax() <= 1):
+        return boxes
+    if bbox_reparam:
+        xyxy = box_ops.box_cxcywh_to_xyxy(boxes).clamp(0.0, 1.0)
+        return box_ops.box_xyxy_to_cxcywh(xyxy)
+    return boxes.sigmoid()
 
 
 def _set_trainable(module: nn.Module, trainable: bool) -> None:
