@@ -16,6 +16,7 @@ from pytorch_lightning.loggers.logger import Logger
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from torch import Tensor
 
+from ..contracts import DetectionClipBatch
 from ..experiment import ExperimentRun
 from .detection import (
     render_confidence_iou_diagnostics,
@@ -24,6 +25,11 @@ from .detection import (
     render_metric_history,
     render_precision_recall,
     render_prediction_grid,
+)
+from .tracking import (
+    render_association_heatmap,
+    render_memory_diagnostics,
+    render_tracking_grid,
 )
 
 
@@ -369,6 +375,189 @@ class RFDetrMonitoringCallback(Callback):
                 f"diagnostic {name} failed: {type(error).__name__}: {error}",
                 level=logging.WARNING,
             )
+
+
+class MeMOTMonitoringCallback(RFDetrMonitoringCallback):
+    """Adapt native diagnostics to clips and add tracking/memory figures."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._tracking_images: list[Tensor] = []
+        self._tracking_predictions: list[dict[str, Any]] = []
+        self._tracking_targets: list[dict[str, Any]] = []
+        self._association_logits: list[Tensor] = []
+        self._memory_diagnostics: list[dict[str, Any]] = []
+
+    @rank_zero_only
+    def on_train_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+        """Report clip/frame throughput without assuming a NestedTensor batch."""
+        del pl_module, outputs
+        if (batch_idx + 1) % self.every_n_steps or not isinstance(
+            batch, DetectionClipBatch
+        ):
+            return
+        elapsed = max(perf_counter() - self._batch_started, 1e-9)
+        clips = batch.batch_size
+        frames = clips * batch.clip_len
+        metrics = {
+            "batch_seconds": elapsed,
+            "clips_per_second": clips / elapsed,
+            "frames_per_second": frames / elapsed,
+        }
+        if torch.cuda.is_available():
+            metrics.update(
+                {
+                    "gpu_allocated_gb": torch.cuda.memory_allocated() / 2**30,
+                    "gpu_reserved_gb": torch.cuda.memory_reserved() / 2**30,
+                    "gpu_peak_allocated_gb": torch.cuda.max_memory_allocated() / 2**30,
+                }
+            )
+        self.logger.log_runtime(metrics, int(trainer.global_step))
+
+    def on_validation_epoch_start(
+        self, trainer: Trainer, pl_module: LightningModule
+    ) -> None:
+        """Reset both detection and video diagnostic caches."""
+        super().on_validation_epoch_start(trainer, pl_module)
+        if trainer.sanity_checking:
+            return
+        self._tracking_images.clear()
+        self._tracking_predictions.clear()
+        self._tracking_targets.clear()
+        self._association_logits.clear()
+        self._memory_diagnostics.clear()
+
+    def on_validation_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: Any,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int = 0,
+    ) -> None:
+        """Cache final detection results plus sequential identity diagnostics."""
+        del pl_module, batch_idx, dataloader_idx
+        if (
+            trainer.sanity_checking
+            or not isinstance(outputs, Mapping)
+            or not isinstance(batch, DetectionClipBatch)
+        ):
+            return
+        results = outputs.get("results")
+        targets = outputs.get("targets")
+        if isinstance(results, list) and isinstance(targets, list):
+            supervised = batch.supervision_mask.any(dim=1).nonzero().flatten()
+            if supervised.numel():
+                images = batch.steps[int(supervised[-1])][0].images.detach().cpu()
+                remaining = self.max_diagnostic_images - len(self._targets)
+                for image, prediction, target in zip(
+                    images[:remaining],
+                    results[:remaining],
+                    targets[:remaining],
+                    strict=True,
+                ):
+                    if len(self._images) < self.max_visual_images:
+                        self._images.append(image)
+                    self._predictions.append(_cpu_mapping(prediction))
+                    self._targets.append(_cpu_mapping(target))
+
+        tracking_predictions = outputs.get("tracking_predictions")
+        tracking_targets = outputs.get("tracking_targets")
+        if isinstance(tracking_predictions, list) and isinstance(
+            tracking_targets, list
+        ):
+            remaining = self.max_diagnostic_images - len(self._tracking_targets)
+            sequential_images = [
+                image.detach().cpu()
+                for step_index, (detection, _) in enumerate(batch.steps)
+                if bool(batch.supervision_mask[step_index].any())
+                for image in detection.images
+            ]
+            self._tracking_images.extend(sequential_images[:remaining])
+            self._tracking_predictions.extend(
+                _cpu_mapping(value) for value in tracking_predictions[:remaining]
+            )
+            self._tracking_targets.extend(
+                _cpu_mapping(value) for value in tracking_targets[:remaining]
+            )
+
+        memot = outputs.get("memot")
+        if isinstance(memot, Mapping):
+            association = memot.get("association_logits")
+            if isinstance(association, Tensor) and not self._association_logits:
+                self._association_logits.append(association.detach().cpu())
+            diagnostics = memot.get("diagnostics")
+            if isinstance(diagnostics, Mapping):
+                self._memory_diagnostics.append(
+                    {
+                        name: value.detach().cpu()
+                        if isinstance(value, Tensor) and value.numel() == 1
+                        else value
+                        for name, value in diagnostics.items()
+                        if isinstance(value, int | float)
+                        or (isinstance(value, Tensor) and value.numel() == 1)
+                    }
+                )
+
+    @rank_zero_only
+    def on_validation_epoch_end(
+        self, trainer: Trainer, pl_module: LightningModule
+    ) -> None:
+        """Publish detection figures followed by MeMOT-specific diagnostics."""
+        super().on_validation_epoch_end(trainer, pl_module)
+        if trainer.sanity_checking:
+            return
+        epoch = int(trainer.current_epoch) + 1
+        if epoch % self.visualize_every_n_epochs and epoch != trainer.max_epochs:
+            return
+        directory = self.run.root / "logs" / "diagnostics"
+        renderers: list[tuple[str, str, Any]] = []
+        if self._tracking_targets:
+            renderers.append(
+                (
+                    "tracking-identities",
+                    "sequential ground-truth and MeMOT track IDs",
+                    lambda path: render_tracking_grid(
+                        self._tracking_images,
+                        self._tracking_predictions,
+                        self._tracking_targets,
+                        self.class_names,
+                        path,
+                        max_images=self.max_visual_images,
+                    ),
+                )
+            )
+        if self._association_logits:
+            renderers.append(
+                (
+                    "association-heatmap",
+                    "proposal-to-memory association probabilities",
+                    lambda path: render_association_heatmap(
+                        self._association_logits[0], path
+                    ),
+                )
+            )
+        if self._memory_diagnostics:
+            renderers.append(
+                (
+                    "memory-lifecycle",
+                    "MeMOT occupancy, age, misses, writes, and evictions",
+                    lambda path: render_memory_diagnostics(
+                        self._memory_diagnostics, path
+                    ),
+                )
+            )
+        for name, description, renderer in renderers:
+            path = directory / f"epoch-{epoch:03d}-{name}.png"
+            self._publish_figure(name, description, epoch, path, renderer)
 
 
 def _metric_parts(name: str) -> tuple[str, str]:

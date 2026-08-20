@@ -1,0 +1,93 @@
+name: rfdetr-memot-video-finetune
+data:
+  name: video_dataloader
+  component_path: datasets/video_dataloader
+  config_path: datasets/video_dataloader/config.yaml
+  root: null
+  context_k: 0
+  context_strategy: empty
+  clip_len: 3
+  augmentations:
+  - horizontal_flip
+  - color_jitter
+detector:
+  name: rfdetr
+  component_path: models/rfdetr
+  config_path: models/rfdetr/config.yaml
+  variant: small
+  weights: null
+  freeze_backbone: true
+  freeze_decoder: false
+  freeze_encoder: null
+  freeze_bbox_embed: false
+  freeze_cls_embed: false
+  num_queries: 300
+  dim: 256
+  num_classes: 10
+  num_heads: 8
+  num_decoder_layers: 3
+context:
+  name: memot
+  fusion: residual
+  num_slots: 128
+  memory_length: 24
+  short_memory_length: 3
+  memory_decoder_layers: 2
+  write_threshold: 0.35
+  max_missed: 12
+  association_iou_threshold: 0.1
+  association_cosine_threshold: 0.5
+  association_appearance_weight: 0.25
+  association_loss_weight: 1.0
+  uniqueness_loss_weight: 0.1
+  motion_momentum: 0.8
+  write_gate: false
+  motion: constant_velocity
+  horizon: 0
+train:
+  epochs: 12
+  lr: 0.0001
+  batch_size: 1
+  grad_accum: 8
+  optimizer: adamw
+  weight_decay: 0.0001
+  warmup_epochs: 2
+  head_lr_multiplier: 1.0
+  decoder_lr_multiplier: 0.5
+  backbone_lr_multiplier: 0.05
+  num_workers: 4
+  seed: 42
+  amp: true
+  denoising: true
+  detach_state: true
+validation:
+  metrics:
+  - map
+  - map_50
+  - hota
+  - assa
+  - idf1
+  every_n_epochs: 1
+  batch_size: 1
+logging:
+  level: INFO
+  every_n_steps: 20
+  visualize_every_n_epochs: 1
+  max_visual_images: 6
+  max_diagnostic_images: 256
+  prediction_score_threshold: 0.25
+output:
+  root: ${oc.env:RFDETR_MEMOT_OUTPUT_ROOT,/job/s3/bt17f0k57rfieh6jugr8/rfdetr-memot-runs}
+  checkpoint_every_n_epochs: 1
+  keep_last_checkpoints: 2
+  save_best: true
+  monitor: map
+clearml:
+  enabled: true
+  project_name: context-detection
+  tags:
+  - rfdetr
+  - memot
+  - video
+  - datasphere
+  - native-training

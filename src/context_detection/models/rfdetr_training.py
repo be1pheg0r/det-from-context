@@ -263,6 +263,7 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
             "targets": last_targets,
             "tracking_predictions": tracking_predictions,
             "tracking_targets": tracking_targets,
+            "memot": last_output.aux.get("memot", {}),
         }
 
     def _tracking_losses(

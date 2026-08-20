@@ -22,6 +22,11 @@ from context_detection.monitoring.lightning import (
     MetricHistory,
     RFDetrMonitoringCallback,
 )
+from context_detection.monitoring.tracking import (
+    render_association_heatmap,
+    render_memory_diagnostics,
+    render_tracking_grid,
+)
 
 
 class _Run:
@@ -147,6 +152,58 @@ def test_detection_diagnostics_render_nonempty_png_artifacts(tmp_path: Path) -> 
                 "val/mAP_50_95": [(1, 0.2), (2, 0.4)],
                 "runtime/grad_norm": [(1, 3.0), (2, 2.0)],
             },
+            path,
+        ),
+    }
+
+    for name, renderer in renderers.items():
+        path = tmp_path / name
+        renderer(path)
+        assert path.stat().st_size > 1_000
+
+
+def test_tracking_diagnostics_render_nonempty_png_artifacts(tmp_path: Path) -> None:
+    images = [torch.zeros(3, 16, 16), torch.ones(3, 16, 16) * 0.1]
+    targets = [
+        {
+            "sequence_id": "video",
+            "frame_id": index,
+            "boxes": torch.tensor([[0.5, 0.5, 0.4, 0.4]]),
+            "labels": torch.tensor([0]),
+            "track_ids": torch.tensor([3]),
+        }
+        for index in range(2)
+    ]
+    predictions = [
+        {
+            **target,
+            "track_ids": torch.tensor([8]),
+            "scores": torch.tensor([0.9]),
+        }
+        for target in targets
+    ]
+    renderers = {
+        "tracks.png": lambda path: render_tracking_grid(
+            images,
+            predictions,
+            targets,
+            ["car"],
+            path,
+            max_images=2,
+        ),
+        "association.png": lambda path: render_association_heatmap(
+            torch.randn(1, 8, 5), path
+        ),
+        "memory.png": lambda path: render_memory_diagnostics(
+            [
+                {
+                    "active_slots": 3,
+                    "mean_age": 2.0,
+                    "mean_missed": 0.5,
+                    "write_rate": 0.75,
+                    "evicted": 1,
+                }
+            ],
             path,
         ),
     }
