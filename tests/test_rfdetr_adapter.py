@@ -89,7 +89,11 @@ class _UpstreamModel(nn.Module):
         self.class_embed = nn.Linear(4, 2)
         self.box_embed = nn.Linear(4, 4)
 
-    def forward(self, images: Tensor) -> dict[str, Any]:
+    def forward(
+        self, images: Any, targets: list[dict[str, Tensor]] | None = None
+    ) -> dict[str, Any]:
+        del targets
+        images = getattr(images, "tensors", images)
         features, positions, _ = self.backbone(images)
         sources: list[Tensor] = [feature.tensors for feature in features]
         masks: list[Tensor] = [

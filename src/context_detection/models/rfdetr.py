@@ -9,6 +9,7 @@ from types import ModuleType
 from typing import Any, Final, cast
 
 from rfdetr.utilities import box_ops
+from rfdetr.utilities.tensors import nested_tensor_from_tensor_list
 from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 
@@ -181,7 +182,14 @@ class RFDetrAdapter(DetectorAdapter):
         capture = _RFDetrForwardCapture(self.model, query_init)
         capture.install()
         try:
-            raw_output: object = self.model(batch.images)
+            block_size = int(getattr(self.model_config, "patch_size", 1)) * int(
+                getattr(self.model_config, "num_windows", 1)
+            )
+            samples = nested_tensor_from_tensor_list(
+                list(batch.images.unbind(0)), block_size=block_size
+            )
+            targets = batch.targets if self.model.training else None
+            raw_output: object = self.model(samples, targets)
         finally:
             capture.remove()
 
@@ -205,11 +213,12 @@ class RFDetrAdapter(DetectorAdapter):
             if key not in {"pred_logits", "pred_boxes", "aux_outputs"}
         }
         aux["upstream_outputs"] = predictions
+        proposal_count = min(self.num_queries, logits.shape[1])
         return DetectorOutput(
-            logits=logits,
-            boxes=boxes,
-            queries=queries,
-            reference_points=boxes,
+            logits=logits[:, :proposal_count],
+            boxes=boxes[:, :proposal_count],
+            queries=queries[:, :proposal_count],
+            reference_points=boxes[:, :proposal_count],
             features=capture.features,
             decoder_layers=decoder_layers,
             aux=aux,

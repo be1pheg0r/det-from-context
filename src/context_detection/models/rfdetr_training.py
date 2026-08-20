@@ -11,10 +11,18 @@ from pytorch_lightning import LightningDataModule
 from rfdetr.config import TrainConfig as RFDetrTrainConfig
 from rfdetr.training import RFDETRModelModule
 from rfdetr.utilities.tensors import NestedTensor, nested_tensor_from_tensor_list
+from torch import Tensor
 from torch.utils.data import DataLoader
 
 from ..config import ExperimentConfig
-from ..contracts import ContextBatch, DetectionBatch
+from ..contracts import (
+    ContextBatch,
+    DetectionBatch,
+    DetectionClipBatch,
+    DetectorOutput,
+)
+from .memory import MeMOTState
+from .memot import MeMOTTracker
 from .rfdetr import RFDetrAdapter
 
 
@@ -51,6 +59,258 @@ class ComponentRFDetrModule(RFDETRModelModule):
         super().__init__(template, train_config)
         self.model = detector.model
         self.model_config = model_config
+
+
+class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
+    """Train external MeMOT on clips while retaining RF-DETR's native stack.
+
+    The upstream criterion, matcher, optimizer grouping, scheduler, AMP, EMA,
+    and checkpoint callbacks remain owned by ``RFDETRModelModule``. Only the
+    sequential clip step and the two MeMOT-specific losses are added here.
+    """
+
+    def __init__(
+        self,
+        tracker: MeMOTTracker,
+        train_config: RFDetrTrainConfig,
+        config: ExperimentConfig,
+    ) -> None:
+        if not isinstance(tracker.detector, RFDetrAdapter):
+            raise TypeError("RF-DETR + MeMOT training requires RFDetrAdapter")
+        super().__init__(tracker.detector, train_config)
+        self.config = config
+        # Register MeMOT below the official model so its optimizer, EMA and
+        # checkpoints see the added parameters without replacing upstream code.
+        self.model.add_module("project_memot_encoder", tracker.memory_encoder)
+        self.model.add_module("project_memot_decoder", tracker.memory_decoder)
+        # Avoid registering the detector/model a second time on the Lightning
+        # module; the tracker references the exact modules attached above.
+        self.__dict__["_tracker"] = tracker
+
+    @property
+    def tracker(self) -> MeMOTTracker:
+        """Return the non-owning orchestration wrapper."""
+        tracker = self.__dict__.get("_tracker")
+        if not isinstance(tracker, MeMOTTracker):
+            raise RuntimeError("MeMOT tracker was not initialized")
+        return tracker
+
+    def transfer_batch_to_device(
+        self,
+        batch: Any,
+        device: torch.device,
+        dataloader_idx: int,
+    ) -> Any:
+        """Move Pydantic clip contracts, which Lightning cannot traverse."""
+        if isinstance(batch, DetectionClipBatch):
+            return _clip_to_device(batch, device)
+        return super().transfer_batch_to_device(batch, device, dataloader_idx)
+
+    def training_step(
+        self, batch: DetectionClipBatch, batch_idx: int
+    ) -> Tensor | dict[str, Any]:
+        """Accumulate detection and association supervision over one clip."""
+        result = self._clip_step(batch, stage="train")
+        loss = result["loss"]
+        try:
+            accumulation = max(1, int(self.trainer.accumulate_grad_batches))
+        except RuntimeError:
+            accumulation = 1
+        returned_loss = loss / accumulation
+        if self.train_config.compute_train_metrics:
+            return {
+                **result,
+                "loss": returned_loss,
+            }
+        return returned_loss
+
+    def validation_step(
+        self, batch: DetectionClipBatch, batch_idx: int
+    ) -> dict[str, Any]:
+        """Evaluate the last supervised frame and log clip-level losses."""
+        del batch_idx
+        return self._clip_step(batch, stage="val")
+
+    def test_step(self, batch: DetectionClipBatch, batch_idx: int) -> dict[str, Any]:
+        """Reuse validation semantics for a fixed held-out tracking split."""
+        del batch_idx
+        return self._clip_step(batch, stage="test")
+
+    def _clip_step(self, batch: DetectionClipBatch, *, stage: str) -> dict[str, Any]:
+        if not isinstance(batch, DetectionClipBatch):
+            raise TypeError("RF-DETR + MeMOT requires DetectionClipBatch")
+        self.tracker.train(self.training)
+        state: MeMOTState | None = None
+        gt_slots: list[dict[int, int]] = [dict() for _ in range(batch.batch_size)]
+        totals: dict[str, Tensor] = {}
+        supervised_steps = 0
+        last_output: DetectorOutput | None = None
+        last_targets: list[dict[str, Tensor]] | None = None
+
+        for step_index, (detection, context) in enumerate(batch.steps):
+            prior_state = state
+            output, state = self.tracker(detection, context, state)
+            supervision = batch.supervision_mask[step_index]
+            if not bool(supervision.any()):
+                continue
+            if not bool(supervision.all()):
+                raise ValueError(
+                    "mixed supervised/unsupervised samples within one clip step "
+                    "are not supported"
+                )
+            upstream = output.aux.get("upstream_outputs")
+            if not isinstance(upstream, Mapping):
+                raise TypeError("RF-DETR adapter did not preserve upstream outputs")
+            targets = detection.targets
+            loss_dict = self.criterion(upstream, targets)
+            weighted_detection = torch.stack(
+                [
+                    value * self.criterion.weight_dict[name]
+                    for name, value in loss_dict.items()
+                    if name in self.criterion.weight_dict
+                ]
+            ).sum()
+            _accumulate_loss(totals, "loss_detection", weighted_detection)
+            for name, value in loss_dict.items():
+                _accumulate_loss(totals, f"rfdetr_{name}", value)
+
+            if batch.mode == "tracking":
+                association, uniqueness, indices = self._tracking_losses(
+                    output,
+                    upstream,
+                    targets,
+                    prior_state,
+                    gt_slots,
+                )
+                _accumulate_loss(totals, "loss_association", association)
+                _accumulate_loss(totals, "loss_uniqueness", uniqueness)
+                self._update_gt_slots(output, targets, indices, gt_slots)
+            supervised_steps += 1
+            last_output = output
+            last_targets = targets
+
+        if not supervised_steps or last_output is None or last_targets is None:
+            raise ValueError("video clip contains no supervised frame")
+        averaged = {name: value / supervised_steps for name, value in totals.items()}
+        association = averaged.get("loss_association", last_output.logits.new_zeros(()))
+        uniqueness = averaged.get("loss_uniqueness", last_output.logits.new_zeros(()))
+        loss = (
+            averaged["loss_detection"]
+            + self.config.context.association_loss_weight * association
+            + self.config.context.uniqueness_loss_weight * uniqueness
+        )
+        self._log_clip_losses(stage, loss, averaged, batch.batch_size)
+        orig_sizes = torch.stack([target["orig_size"] for target in last_targets])
+        results = self.postprocess(
+            {
+                "pred_logits": last_output.logits,
+                "pred_boxes": last_output.boxes,
+            },
+            orig_sizes,
+        )
+        return {"loss": loss, "results": results, "targets": last_targets}
+
+    def _tracking_losses(
+        self,
+        output: DetectorOutput,
+        upstream: Mapping[str, Any],
+        targets: list[dict[str, Tensor]],
+        prior_state: MeMOTState | None,
+        gt_slots: list[dict[int, int]],
+    ) -> tuple[Tensor, Tensor, list[tuple[Tensor, Tensor]]]:
+        memot = output.aux.get("memot")
+        if not isinstance(memot, dict):
+            raise TypeError("MeMOT output diagnostics are missing")
+        association_logits = memot.get("association_logits")
+        if not isinstance(association_logits, Tensor):
+            raise TypeError("MeMOT association_logits are missing")
+        proposal_count = association_logits.shape[1]
+        matcher_outputs = {
+            "pred_logits": upstream["pred_logits"][:, :proposal_count],
+            "pred_boxes": upstream["pred_boxes"][:, :proposal_count],
+        }
+        indices = self.criterion.matcher(matcher_outputs, targets)
+        association_terms: list[Tensor] = []
+        new_track_class = association_logits.shape[-1] - 1
+        for batch_index, (proposal_indices, target_indices) in enumerate(indices):
+            track_ids = targets[batch_index].get("track_ids")
+            if track_ids is None:
+                continue
+            selected_ids = track_ids[target_indices]
+            valid = selected_ids >= 0
+            if not bool(valid.any()):
+                continue
+            proposal_indices = proposal_indices[valid]
+            selected_ids = selected_ids[valid]
+            labels = torch.full_like(selected_ids, new_track_class)
+            for index, track_id in enumerate(selected_ids.tolist()):
+                slot = gt_slots[batch_index].get(int(track_id))
+                if slot is not None and (
+                    prior_state is None or bool(prior_state.valid[batch_index, slot])
+                ):
+                    labels[index] = slot
+            association_terms.append(
+                torch.nn.functional.cross_entropy(
+                    association_logits[batch_index, proposal_indices], labels
+                )
+            )
+        association = (
+            torch.stack(association_terms).mean()
+            if association_terms
+            else association_logits.sum() * 0.0
+        )
+        existing_probability = association_logits.softmax(dim=-1)[..., :-1]
+        occupancy = existing_probability.sum(dim=1)
+        uniqueness = torch.relu(occupancy - 1.0).square().mean()
+        return association, uniqueness, indices
+
+    @staticmethod
+    def _update_gt_slots(
+        output: DetectorOutput,
+        targets: list[dict[str, Tensor]],
+        indices: list[tuple[Tensor, Tensor]],
+        gt_slots: list[dict[int, int]],
+    ) -> None:
+        slots = output.aux["memot"].get("slot_indices")
+        if not isinstance(slots, Tensor):
+            raise TypeError("MeMOT slot_indices are missing after memory update")
+        for batch_index, (proposal_indices, target_indices) in enumerate(indices):
+            track_ids = targets[batch_index].get("track_ids")
+            if track_ids is None:
+                continue
+            for proposal, target in zip(
+                proposal_indices.tolist(), target_indices.tolist(), strict=True
+            ):
+                track_id = int(track_ids[target])
+                slot = int(slots[batch_index, proposal])
+                if track_id >= 0 and slot >= 0:
+                    gt_slots[batch_index][track_id] = slot
+
+    def _log_clip_losses(
+        self,
+        stage: str,
+        loss: Tensor,
+        components: dict[str, Tensor],
+        batch_size: int,
+    ) -> None:
+        on_step = stage == "train" and bool(self.train_config.train_log_on_step)
+        sync_dist = stage != "train" or bool(self.train_config.train_log_sync_dist)
+        self.log_dict(
+            {f"{stage}/{name}": value for name, value in components.items()},
+            on_step=on_step,
+            on_epoch=True,
+            sync_dist=sync_dist,
+            batch_size=batch_size,
+        )
+        self.log(
+            f"{stage}/loss",
+            loss,
+            prog_bar=True,
+            on_step=on_step,
+            on_epoch=True,
+            sync_dist=sync_dist,
+            batch_size=batch_size,
+        )
 
 
 class ProjectRFDetrDataModule(LightningDataModule):
@@ -101,9 +361,9 @@ class ProjectRFDetrDataModule(LightningDataModule):
 
     def on_before_batch_transfer(
         self,
-        batch: tuple[DetectionBatch, ContextBatch] | list[Any],
+        batch: DetectionClipBatch | tuple[DetectionBatch, ContextBatch] | list[Any],
         dataloader_idx: int,
-    ) -> tuple[NestedTensor, list[dict[str, Any]]]:
+    ) -> DetectionClipBatch | tuple[NestedTensor, list[dict[str, Any]]]:
         """Convert project contracts to RF-DETR's ``NestedTensor, targets`` batch.
 
         PyTorch's pin-memory walker converts plain tuples to lists for backwards
@@ -111,6 +371,8 @@ class ProjectRFDetrDataModule(LightningDataModule):
         though :class:`DetectionCollator` returns a tuple on the CPU path.
         """
         del dataloader_idx
+        if isinstance(batch, DetectionClipBatch):
+            return batch
         if not isinstance(batch, tuple | list) or len(batch) != 2:
             raise TypeError(
                 "project RF-DETR loader must return (DetectionBatch, ContextBatch)"
@@ -132,6 +394,57 @@ class ProjectRFDetrDataModule(LightningDataModule):
         )
         targets = [dict(target) for target in detection.targets]
         return samples, targets
+
+
+def _accumulate_loss(totals: dict[str, Tensor], name: str, value: Tensor) -> None:
+    totals[name] = totals.get(name, value.new_zeros(())) + value
+
+
+def _clip_to_device(
+    batch: DetectionClipBatch, device: torch.device
+) -> DetectionClipBatch:
+    """Rebuild a clip contract with every model-facing tensor on one device."""
+    steps: list[tuple[DetectionBatch, ContextBatch]] = []
+    for detection, context in batch.steps:
+        moved_targets = [
+            {name: value.to(device) for name, value in target.items()}
+            for target in detection.targets
+        ]
+        moved_detection = DetectionBatch(
+            images=detection.images.to(device),
+            targets=moved_targets,
+            sequence_id=detection.sequence_id,
+            frame_id=detection.frame_id.to(device),
+            timestamp=detection.timestamp.to(device),
+            is_sequence_start=(
+                None
+                if detection.is_sequence_start is None
+                else detection.is_sequence_start.to(device)
+            ),
+        )
+        moved_context = ContextBatch(
+            images=None if context.images is None else context.images.to(device),
+            valid_mask=context.valid_mask.to(device),
+            time_offsets=context.time_offsets.to(device),
+            targets=(
+                None
+                if context.targets is None
+                else [
+                    [
+                        {name: value.to(device) for name, value in target.items()}
+                        for target in sample
+                    ]
+                    for sample in context.targets
+                ]
+            ),
+            extras=context.extras,
+        )
+        steps.append((moved_detection, moved_context))
+    return DetectionClipBatch(
+        steps=steps,
+        supervision_mask=batch.supervision_mask.to(device),
+        mode=batch.mode,
+    )
 
 
 def build_rfdetr_train_config(
