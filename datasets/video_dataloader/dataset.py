@@ -316,13 +316,19 @@ class VideoDataset(Dataset):
         scale_y = self.target_height / original_height
 
         for obj in frame.get("objects", []):
-            category = obj["category"]
-
-            # Неизвестный класс пропускаем
-            if category not in self.classes:
+            category = obj.get("category")
+            if not category or category not in self.classes:
                 continue
 
-            box = obj["box2d"]
+            # 2. Проверяем наличие блока координат
+            box = obj.get("box2d")
+            if not box:
+                continue
+
+            # 3. Проверяем наличие всех нужных точек
+            required_keys = ("x1", "y1", "x2", "y2")
+            if not all(k in box for k in required_keys):
+                continue
 
             x1 = box["x1"] * scale_x
             y1 = box["y1"] * scale_y
