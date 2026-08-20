@@ -5,6 +5,8 @@ dataset:
   # not have to share a parent directory.  DataSphere supplies both values.
   images_dir: ${oc.env:IMAGE_DATASET_IMAGES_DIR,../out/images_test_2}
   annotations_dir: ${oc.env:IMAGE_DATASET_ANNOTATIONS_DIR,../out/labels3}
+  annotation_format: bdd100k_json
+  annotation_extension: ".json"
 
   # Максимальное разрешение изображения.
   # Если исходное изображение больше, оно будет уменьшено
@@ -15,6 +17,12 @@ dataset:
   patch_size: 16
   num_windows: 2
   multi_scale: false
+  expanded_scales: false
+  skip_random_resize: false
+  scale_jitter: true
+  aug_config: null
+  recursive: false
+  strict_pairs: true
 
   # Расширения файлов изображений, которые обрабатываем
   image_extensions:
@@ -27,8 +35,15 @@ dataset:
 # environment on Datasphere (IMAGE_DATASET_IMAGES_DIR and
 # IMAGE_DATASET_ANNOTATIONS_DIR) or edit these two paths for a local run.
 splits:
+  # generated: deterministic, disjoint indices from flat directories.
+  # predefined: images/{train,val,test} and annotations/{train,val,test}.
+  mode: generated
   train_fraction: 0.8
-
+  validation_fraction: 0.2
+  test_fraction: 0.0
+  train_dir: train
+  validation_dir: val
+  test_dir: test
 
 dataloader:
   batch_size: 1
