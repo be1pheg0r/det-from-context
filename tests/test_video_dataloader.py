@@ -74,6 +74,7 @@ def _settings(
     annotation_mode: str = "auto",
     strict_pairs: bool = True,
     max_sequences: dict[str, int] | None = None,
+    annotation_cache_dir: Path | None = None,
 ) -> Any:
     return VideoDataLoaderSettings.model_validate(
         {
@@ -85,6 +86,9 @@ def _settings(
                 "annotation_mode": annotation_mode,
                 "strict_pairs": strict_pairs,
                 "max_sequences": max_sequences or {},
+                "annotation_cache_dir": (
+                    str(annotation_cache_dir) if annotation_cache_dir else None
+                ),
                 "target_fps": 5,
                 "patch_size": 16,
                 "num_windows": 2,
@@ -94,6 +98,47 @@ def _settings(
             "classes": {"car": 0, "person": 1},
         }
     )
+
+
+def test_parsed_annotations_are_cached_and_invalidated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = [{"timestamp": 1000, "objects": [_obj(None)]}]
+    videos, annotations = _write_pair(tmp_path, "cached", frames)
+    cache_dir = tmp_path / "s3-cache"
+    settings = _settings(
+        videos,
+        annotations,
+        annotation_cache_dir=cache_dir,
+    )
+    kwargs = {
+        "split": "train",
+        "split_names": frozenset({"train"}),
+        "clip_len": 1,
+        "resolution": 32,
+        "frame_reader": _FakeFrameReader(),
+        "transform": _transform,
+    }
+
+    first = VideoClipDataset(videos, annotations, settings, **kwargs)
+    assert len(first.records) == 1
+    assert len(list(cache_dir.glob("train-*.json.gz"))) == 1
+
+    def fail_if_parsed(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise AssertionError("cache hit must bypass JSON annotation parsing")
+
+    monkeypatch.setattr(VideoClipDataset, "_read_annotation", fail_if_parsed)
+    second = VideoClipDataset(videos, annotations, settings, **kwargs)
+    assert second.records == first.records
+
+    annotation = next(annotations.rglob("*.json"))
+    annotation.write_text(
+        json.dumps([{"timestamp": 1200, "objects": [_obj(None)]}]),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="must bypass"):
+        VideoClipDataset(videos, annotations, settings, **kwargs)
 
 
 def _write_pair(

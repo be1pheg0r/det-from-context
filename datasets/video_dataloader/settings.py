@@ -21,6 +21,7 @@ class VideoDatasetSettings(_Settings):
     split_videos_dirs: dict[str, str] = Field(default_factory=dict)
     split_annotations_dirs: dict[str, str] = Field(default_factory=dict)
     max_sequences: dict[str, int] = Field(default_factory=dict)
+    annotation_cache_dir: str | None = None
     annotation_extension: str = Field(".json", pattern=r"^\.[^.]+$")
     video_extensions: list[str] = Field(
         default_factory=lambda: [".mp4", ".mov", ".avi", ".mkv"],

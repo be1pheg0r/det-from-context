@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import dataclass
+from gzip import open as gzip_open
+from hashlib import sha256
+from os import getpid
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
@@ -110,6 +113,8 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
     preceding frames are decoded from the real video and exist solely to warm
     temporal memory.
     """
+
+    _CACHE_VERSION = 1
 
     def __init__(
         self,
@@ -232,6 +237,9 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             f"split={self.split}: paired={len(paired_stems)}, missing={len(missing)}, "
             f"orphans={len(orphans)}; parsing JSON annotations"
         )
+        cached = self._load_record_cache(paired_stems, videos, annotations)
+        if cached is not None:
+            return cached
         started = perf_counter()
         report_every = max(1, len(paired_stems) // 20)
         for index, stem in enumerate(paired_stems, start=1):
@@ -251,7 +259,143 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                     f"split={self.split}: parsed {index}/{len(paired_stems)} "
                     f"annotations ({perf_counter() - started:.1f}s)"
                 )
+        self._save_record_cache(records, paired_stems, videos, annotations)
         return records
+
+    def _cache_path(
+        self,
+        stems: list[str],
+        videos: dict[str, Path],
+        annotations: dict[str, Path],
+    ) -> Path | None:
+        cache_dir = self.settings.dataset.annotation_cache_dir
+        if not cache_dir:
+            return None
+        fingerprint = sha256()
+        fingerprint.update(f"v{self._CACHE_VERSION}\0{self.split}\0".encode())
+        fingerprint.update(self.settings.dataset.annotation_mode.encode())
+        fingerprint.update(
+            json.dumps(self.settings.classes, sort_keys=True).encode("utf-8")
+        )
+        for stem in stems:
+            for root, path in (
+                (self.videos_root, videos[stem]),
+                (self.annotations_root, annotations[stem]),
+            ):
+                stat = path.stat()
+                try:
+                    identity = path.relative_to(root).as_posix()
+                except ValueError:
+                    identity = str(path.resolve())
+                fingerprint.update(
+                    f"\0{identity}\0{stat.st_size}\0{stat.st_mtime_ns}".encode()
+                )
+        return Path(cache_dir) / f"{self.split}-{fingerprint.hexdigest()}.json.gz"
+
+    def _load_record_cache(
+        self,
+        stems: list[str],
+        videos: dict[str, Path],
+        annotations: dict[str, Path],
+    ) -> list[VideoRecord] | None:
+        path = self._cache_path(stems, videos, annotations)
+        if path is None or not path.is_file():
+            if path is not None:
+                _progress(f"split={self.split}: annotation cache miss: {path.name}")
+            return None
+        started = perf_counter()
+        try:
+            with gzip_open(path, "rt", encoding="utf-8") as stream:
+                payload = json.load(stream)
+            if payload.get("version") != self._CACHE_VERSION:
+                raise ValueError("unsupported cache version")
+            records = [
+                VideoRecord(
+                    sequence_id=item["sequence_id"],
+                    video_path=videos[item["sequence_id"]],
+                    annotation_path=annotations[item["sequence_id"]],
+                    frames=tuple(
+                        AnnotatedFrame(
+                            timestamp_ms=frame["timestamp_ms"],
+                            objects=tuple(
+                                {
+                                    **source,
+                                    "box": tuple(source["box"]),
+                                }
+                                for source in frame["objects"]
+                            ),
+                        )
+                        for frame in item["frames"]
+                    ),
+                    mode=item["mode"],
+                )
+                for item in payload["records"]
+            ]
+            if [record.sequence_id for record in records] != stems:
+                raise ValueError("cached sequence list does not match discovery")
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            _progress(
+                f"split={self.split}: ignoring invalid annotation cache "
+                f"{path.name}: {type(error).__name__}: {error}"
+            )
+            return None
+        _progress(
+            f"split={self.split}: annotation cache hit; loaded {len(records)} "
+            f"records from {path} in {perf_counter() - started:.1f}s"
+        )
+        return records
+
+    def _save_record_cache(
+        self,
+        records: list[VideoRecord],
+        stems: list[str],
+        videos: dict[str, Path],
+        annotations: dict[str, Path],
+    ) -> None:
+        path = self._cache_path(stems, videos, annotations)
+        if path is None:
+            return
+        payload = {
+            "version": self._CACHE_VERSION,
+            "records": [
+                {
+                    "sequence_id": record.sequence_id,
+                    "mode": record.mode,
+                    "frames": [
+                        {
+                            "timestamp_ms": frame.timestamp_ms,
+                            "objects": list(frame.objects),
+                        }
+                        for frame in record.frames
+                    ],
+                }
+                for record in records
+            ],
+        }
+        temporary = path.with_name(f".{path.name}.{getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with gzip_open(
+                temporary, "wt", encoding="utf-8", compresslevel=3
+            ) as stream:
+                json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+            temporary.replace(path)
+            _progress(
+                f"split={self.split}: saved {len(records)} parsed annotations "
+                f"to cache {path}"
+            )
+        except OSError as error:
+            _progress(
+                f"split={self.split}: annotation cache write failed: "
+                f"{type(error).__name__}: {error}"
+            )
+            temporary.unlink(missing_ok=True)
 
     def _bounded_pairs(self, limit: int) -> tuple[dict[str, Path], dict[str, Path]]:
         """Stop lazy file discovery as soon as enough video/JSON stems match."""
