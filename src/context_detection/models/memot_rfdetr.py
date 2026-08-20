@@ -13,6 +13,7 @@ Expected target format per frame:
     }
 """
 from __future__ import annotations
+
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -22,8 +23,8 @@ import torch.nn.functional as F
 
 from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
 from .detector import DetectorAdapter
-from .memory import MeMOTMemory, MeMOTState
 from .losses import generalized_box_iou, box_cxcywh_to_xyxy, SetCriterion
+from .memory import MeMOTMemory, MeMOTState
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +543,7 @@ class RFDETRMeMOT(nn.Module):
         if gt_boxes.numel() == 0:
             return obj, uni, boxes, pred_boxes.new_zeros(0, dtype=torch.long)
 
-        cost = (torch.cdist(pred_boxes, gt_boxes, p=1) - 
+        cost = (torch.cdist(pred_boxes, gt_boxes, p=1) -
             _pairwise_iou(pred_boxes, gt_boxes))
         row, col = _hungarian(cost)
         obj[row] = 1.0
