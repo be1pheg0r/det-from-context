@@ -1,8 +1,7 @@
-# dataloader.py
-
 import torch
-from .dataset import VideoDataset
 from torch.utils.data import DataLoader
+
+from .dataset import VideoDataset
 
 
 def video_collate_fn(batch):

@@ -13,9 +13,8 @@ Expected target format per frame:
     }
 """
 from __future__ import annotations
-
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
 
 import torch
 from torch import Tensor, nn
@@ -31,7 +30,9 @@ from .losses import generalized_box_iou, box_cxcywh_to_xyxy, SetCriterion
 # Small utilities
 # ---------------------------------------------------------------------------
 
-def _focal_binary(logits: Tensor, target: Tensor, alpha: float = 0.25, gamma: float = 2.0) -> Tensor:
+def _focal_binary(
+    logits: Tensor, target: Tensor, alpha: float = 0.25, gamma: float = 2.0
+) -> Tensor:
     target = target.to(dtype=logits.dtype)
     p = logits.sigmoid()
     ce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
@@ -83,20 +84,22 @@ class MeMOTRuntimeState:
     track_ids: Tensor       # [B,S], int64; -1 means slot has no public identity yet
     next_track_id: Tensor   # [B], int64
 
-    def detach(self) -> "MeMOTRuntimeState":
+    def detach(self):
         return MeMOTRuntimeState(
             memory=self.memory.detach(),
             track_ids=self.track_ids,
             next_track_id=self.next_track_id,
         )
 
-    def reset(self, mask: Tensor) -> "MeMOTRuntimeState":
+    def reset(self, mask: Tensor):
         if not bool(mask.any()):
             return self
         b, s = self.track_ids.shape
         m = mask[:, None]
         ids = torch.where(m, torch.full_like(self.track_ids, -1), self.track_ids)
-        nxt = torch.where(mask, torch.zeros_like(self.next_track_id), self.next_track_id)
+        nxt = torch.where(
+            mask, torch.zeros_like(self.next_track_id), self.next_track_id
+        )
         return MeMOTRuntimeState(self.memory.reset(mask), ids, nxt)
 
 
@@ -215,7 +218,6 @@ class RFDETRMeMOT(nn.Module):
         self, state: MeMOTRuntimeState | None, dtype: torch.dtype
     ) -> tuple[list[Tensor], list[Tensor]]:
         if state is None:
-            b = 0
             return [], []
         valid = state.memory.valid
         base = state.memory.feature.to(dtype=dtype)
@@ -250,7 +252,8 @@ class RFDETRMeMOT(nn.Module):
         )
         if ctx.memory_state is not None:
             state.memory = ctx.memory_state
-        delta = ctx.query_delta if ctx.query_delta is not None else torch.zeros_like(base)
+        delta = ctx.query_delta if ctx.query_delta is not None \
+            else torch.zeros_like(base)
         track_all = self.query_norm(base + delta)
         tracks: list[Tensor] = []
         slots: list[Tensor] = []
@@ -537,7 +540,7 @@ class RFDETRMeMOT(nn.Module):
         row, col = _hungarian(cost)
         obj[row] = 1.0
         boxes[row] = gt_boxes[col]
-        for r, c in zip(row.tolist(), col.tolist()):
+        for r, c in zip(row.tolist(), col.tolist(), , strict=False):
             # u=1 only for a genuinely new object; if this instance has already
             # appeared earlier in the clip, the proposal must be suppressed.
             uni[r] = 0.0 if int(gt_ids[c]) in seen_ids else 1.0
@@ -619,26 +622,35 @@ class MeMOTClipTrainer:
         self.detach_state = detach_state
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp)
 
-    def train_epoch(self, loader: Iterable[tuple[DetectionBatch, ContextBatch]]) -> dict[str, float]:
+    def train_epoch(self, loader: Iterable[tuple[DetectionBatch, ContextBatch]]) \
+-> dict[str, float]:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         state: MeMOTRuntimeState | None = None
         seen_by_batch: list[set[int]] | None = None
-        total = {"loss_total": 0.0, "loss_track": 0.0, "loss_proposal": 0.0, "loss_aux_det": 0.0}
+        total = {
+            "loss_total": 0.0, "loss_track": 0.0, "loss_proposal": 0.0,
+             "loss_aux_det": 0.0
+        }
         steps = 0
 
         for step, (batch, context) in enumerate(loader):
             if batch.batch_size != 1:
-                raise ValueError("MeMOTClipTrainer intentionally requires batch_size=1")
+                raise ValueError(
+                    "MeMOTClipTrainer intentionally requires batch_size=1"
+                )
             if state is None:
                 state = self.model.init_state(1, batch.images.device)
                 seen_by_batch = [set()]
-            elif batch.is_sequence_start is not None and bool(batch.is_sequence_start[0]):
+            elif batch.is_sequence_start is not None 
+                \ and bool(batch.is_sequence_start[0]):
                 state = state.reset(batch.is_sequence_start)
                 seen_by_batch = [set()]
 
             with torch.autocast(device_type=batch.images.device.type, enabled=self.amp):
-                output, new_state = self.model(batch, context, state, training_targets=True)
+                output, new_state = self.model(
+                    batch, context, state, training_targets=True
+                )
                 target = batch.targets[0]
                 track_target_ids = self._slot_ids_for_current_frame(state, target)
                 losses = self.model.loss(
@@ -658,7 +670,9 @@ class MeMOTClipTrainer:
             for k, v in losses.items():
                 total[k] += float(v.detach())
             steps += 1
-            seen_by_batch[0].update(int(x) for x in target["instance_ids"].detach().cpu().tolist())
+            seen_by_batch[0].update(
+                int(x) for x in target["instance_ids"].detach().cpu().tolist()
+            )
             state = new_state.detach() if self.detach_state else new_state
 
         if steps == 0:
@@ -683,4 +697,6 @@ class MeMOTClipTrainer:
             return slot_ids.new_empty(0)
         iou = _pairwise_iou(slot_boxes, gt_boxes)
         best = iou.argmax(dim=1)
-        return torch.where(iou.max(dim=1).values >= 0.3, gt_ids[best], torch.full_like(slot_ids, -1))
+        return torch.where(
+            iou.max(dim=1).values >= 0.3, gt_ids[best], torch.full_like(slot_ids, -1)
+        )

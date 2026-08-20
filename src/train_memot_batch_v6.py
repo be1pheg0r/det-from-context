@@ -1,22 +1,19 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
-import rfdetr
-import argparse
+import yaml
 import random
+import argparse
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
-
+import rfdetr
+import numpy as np
 from clearml import Task
-import yaml
 from torch.utils.data import DataLoader, Subset
-
 from src.context_detection.config import load_config
-from src.context_detection.contracts import ContextBatch, DetectionBatch, DetectorOutput
 from src.context_detection.models.memory import MeMOTMemory
+from src.context_detection.contracts import ContextBatch, DetectionBatch, DetectorOutput
 from src.context_detection.models.protocols import build_registered_detector
 from src.datasets.video_dataloader.dataloader import create_video_dataloader
 from src.context_detection.models.memot_rfdetr import RFDETRMeMOT, MeMOTOutput
