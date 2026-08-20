@@ -101,7 +101,7 @@ class ComponentDirectory:
     @staticmethod
     def _load_provider(path: Path, kind: ComponentKind) -> ModuleType:
         digest: str = hashlib.sha256(str(path).encode()).hexdigest()[:12]
-        module_name: str = f"context_detection_{kind}_component_{digest}"
+        module_name: str = f"src.context_detection_{kind}_component_{digest}"
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"не удалось создать import spec для {path}")
