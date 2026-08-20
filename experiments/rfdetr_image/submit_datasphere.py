@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -46,7 +48,7 @@ def main() -> None:
         config_path.write_text(rendered, encoding="utf-8")
         subprocess.run(
             [
-                "datasphere",
+                str(_datasphere_executable()),
                 "project",
                 "job",
                 "execute",
@@ -58,6 +60,20 @@ def main() -> None:
             check=True,
             cwd=project_root,
         )
+
+
+def _datasphere_executable() -> Path:
+    """Resolve the CLI from PATH or the active virtual environment."""
+    discovered = shutil.which("datasphere")
+    if discovered is not None:
+        return Path(discovered)
+    suffix = ".exe" if os.name == "nt" else ""
+    sibling = Path(sys.executable).with_name(f"datasphere{suffix}")
+    if sibling.is_file():
+        return sibling
+    raise FileNotFoundError(
+        "datasphere CLI is not installed; install the project dependencies first"
+    )
 
 
 def _build_project_archive(project_root: Path, archive_path: Path) -> None:
