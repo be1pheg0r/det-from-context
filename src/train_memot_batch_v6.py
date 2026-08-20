@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-import yaml
-import random
 import argparse
+import random
 from pathlib import Path
 from typing import Any
 
-import torch
-import rfdetr
 import numpy as np
+import rfdetr
+import torch
+import yaml
 from clearml import Task
-from torch.utils.data import DataLoader, Subset
 from src.context_detection.config import load_config
-from src.context_detection.models.memory import MeMOTMemory
 from src.context_detection.contracts import ContextBatch, DetectionBatch, DetectorOutput
+from src.context_detection.models.memory import MeMOTMemory
+from src.context_detection.models.memot_rfdetr import MeMOTOutput, RFDETRMeMOT
 from src.context_detection.models.protocols import build_registered_detector
 from src.datasets.video_dataloader.dataloader import create_video_dataloader
-from src.context_detection.models.memot_rfdetr import RFDETRMeMOT, MeMOTOutput
+from torch.utils.data import DataLoader, Subset
 
 
 def parse_args() -> argparse.Namespace:
