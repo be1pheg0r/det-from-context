@@ -75,6 +75,10 @@ class ExperimentTracker(ABC):
         """Загрузить артефакт запуска."""
 
     @abstractmethod
+    def log_image(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать изображение в мониторинг запуска."""
+
+    @abstractmethod
     def complete(self) -> None:
         """Отметить запуск успешно завершённым."""
 
@@ -95,6 +99,9 @@ class LocalTracker(ExperimentTracker):
 
     def upload_artifact(self, name: str, path: Path) -> None:
         """Не дублировать локальный артефакт."""
+
+    def log_image(self, title: str, series: str, step: int, path: Path) -> None:
+        """Не дублировать локальное изображение."""
 
     def complete(self) -> None:
         """Локальный статус обновляет сам запуск."""
@@ -151,6 +158,16 @@ class ClearMLTracker(ExperimentTracker):
             name=name,
             artifact_object=str(path),
             wait_on_upload=True,
+        )
+
+    def log_image(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать изображение в ClearML Debug Samples."""
+        self._logger.report_image(
+            title=title,
+            series=series,
+            iteration=step,
+            local_path=str(path),
+            max_image_history=-1,
         )
 
     def complete(self) -> None:
@@ -259,6 +276,12 @@ class ExperimentRun:
         self.tracker.log_metrics(normalized, step, split)
         self._logger.info("metrics split=%s step=%d values=%s", split, step, normalized)
 
+    def log_message(self, message: str, level: int = logging.INFO) -> None:
+        """Write one message to both the run file and the live console stream."""
+        if self.status is not RunStatus.RUNNING:
+            raise RuntimeError("messages can only be written to an active run")
+        self._logger.log(level, message)
+
     def save_artifact(self, name: str, source: str | Path) -> Path:
         """Скопировать файл в запуск и передать его backend-у.
 
@@ -279,6 +302,13 @@ class ExperimentRun:
         self.tracker.upload_artifact(name, destination)
         return destination
 
+    def log_image(self, title: str, series: str, step: int, path: str | Path) -> None:
+        """Передать изображение tracker-у после проверки локального файла."""
+        source: Path = Path(path).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        self.tracker.log_image(title, series, step, source)
+
     def complete(self, summary: Mapping[str, Any] | None = None) -> None:
         """Зафиксировать итог и успешно закрыть запуск."""
         if self.status is not RunStatus.RUNNING:
@@ -286,11 +316,15 @@ class ExperimentRun:
         summary_path: Path = self.root / ResultEntry.SUMMARY
         _write_json(summary_path, dict(summary or {}))
         self.tracker.upload_artifact("summary", summary_path)
+        self._logger.info("experiment completed")
+        self._flush_logger()
+        self.tracker.upload_artifact(
+            "experiment.log", self.root / ResultEntry.LOGS / "experiment.log"
+        )
         self.tracker.complete()
         self.status = RunStatus.COMPLETED
         self._metadata["finished_at"] = _utc_now()
         self._write_metadata()
-        self._logger.info("experiment completed")
         self._close_logger()
 
     def fail(self, error: BaseException) -> None:
@@ -298,15 +332,22 @@ class ExperimentRun:
         if self.status is not RunStatus.RUNNING:
             return
         reason: str = f"{type(error).__name__}: {error}"
+        self._logger.error(
+            "experiment failed",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self._flush_logger()
+        try:
+            self.tracker.upload_artifact(
+                "experiment.log", self.root / ResultEntry.LOGS / "experiment.log"
+            )
+        except Exception:
+            self._logger.exception("failed to upload experiment log")
         self.tracker.fail(reason)
         self.status = RunStatus.FAILED
         self._metadata["finished_at"] = _utc_now()
         self._metadata["error"] = reason
         self._write_metadata()
-        self._logger.error(
-            "experiment failed",
-            exc_info=(type(error), error, error.__traceback__),
-        )
         self._close_logger()
 
     def __enter__(self) -> ExperimentRun:
@@ -330,13 +371,22 @@ class ExperimentRun:
         logger: logging.Logger = logging.getLogger(f"experiment.{self.root.name}")
         logger.setLevel(self.config.logging.level.value)
         logger.propagate = False
-        handler: logging.FileHandler = logging.FileHandler(
+        formatter = logging.Formatter(self._LOG_FORMAT)
+        file_handler: logging.FileHandler = logging.FileHandler(
             self.root / ResultEntry.LOGS / "experiment.log",
             encoding="utf-8",
         )
-        handler.setFormatter(logging.Formatter(self._LOG_FORMAT))
-        logger.addHandler(handler)
+        file_handler.setFormatter(formatter)
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        logger.addHandler(stream_handler)
         return logger
+
+    def _flush_logger(self) -> None:
+        """Flush all local handlers before an artifact upload or process exit."""
+        for handler in self._logger.handlers:
+            handler.flush()
 
     def _close_logger(self) -> None:
         for handler in tuple(self._logger.handlers):
@@ -454,7 +504,7 @@ class ExperimentProtocol:
         component_sources: list[Path] = [
             source
             for component in component_directories.values()
-            for source in (component.provider_path, component.config_path)
+            for source in self._component_source_files(component)
         ]
         self._snapshot_sources(
             root,
@@ -555,6 +605,11 @@ class ExperimentProtocol:
             if model_component is not None:
                 runtime_config.detector.component_path = str(model_component.root)
                 runtime_config.detector.config_path = str(model_component.config_path)
+            dataset_num_classes = self._dataset_num_classes(
+                experiment.dataset_config_path
+            )
+            if dataset_num_classes is not None:
+                runtime_config.detector.num_classes = dataset_num_classes
             torch.manual_seed(runtime_config.train.seed)
             model: nn.Module = build_registered_model(runtime_config)
             dataloaders: dict[str, DataLoader[Any]] = {}
@@ -606,6 +661,27 @@ class ExperimentProtocol:
                 experiment.save_artifact(artifact_name, artifact)
                 published.append(artifact_name)
         experiment.record_metadata("component_artifacts", published)
+
+    @staticmethod
+    def _dataset_num_classes(config_path: Path) -> int | None:
+        """Return the class count declared by a dataset component, when present."""
+        raw: Any = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+        if not isinstance(raw, dict):
+            raise ValueError(f"{config_path} must contain a mapping")
+        classes: Any = raw.get("classes")
+        if classes is None:
+            return None
+        if not isinstance(classes, dict) or not classes:
+            raise ValueError(f"{config_path}: classes must be a non-empty mapping")
+        class_ids = list(classes.values())
+        if not all(
+            isinstance(class_id, int) and not isinstance(class_id, bool)
+            for class_id in class_ids
+        ):
+            raise ValueError(f"{config_path}: class IDs must be integers")
+        if set(class_ids) != set(range(len(class_ids))):
+            raise ValueError(f"{config_path}: class IDs must be contiguous from 0")
+        return len(class_ids)
 
     def _load_environment(self) -> None:
         env_path: Path = self.project_root / self._ENV_FILE
@@ -670,6 +746,22 @@ class ExperimentProtocol:
             seen_targets.add(destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+
+    @staticmethod
+    def _component_source_files(component: ComponentDirectory) -> list[Path]:
+        """Return reproducibility-relevant component files, excluding artifacts."""
+        supported = {".py", ".yaml", ".yml", ".md"}
+        sources: list[Path] = []
+        for source in component.root.rglob("*"):
+            relative = source.relative_to(component.root)
+            if (
+                source.is_file()
+                and source.suffix.lower() in supported
+                and "artifacts" not in relative.parts
+                and "__pycache__" not in relative.parts
+            ):
+                sources.append(source)
+        return sorted(sources)
 
     @staticmethod
     def _make_tracker(config: ExperimentConfig) -> ExperimentTracker:

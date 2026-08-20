@@ -115,10 +115,24 @@ class ContextDetectorModelProtocol:
         """Построить и применить режимы заморозки к detector adapter."""
         detector: DetectorAdapter = self.detector_factory(config)
         detector_config = config.detector
-        if detector_config.freeze_backbone or detector_config.freeze_decoder:
+        freeze_backbone: bool = bool(detector_config.freeze_backbone)
+        freeze_decoder: bool = bool(detector_config.freeze_decoder)
+        freeze_encoder: bool = bool(detector_config.freeze_encoder)
+        freeze_bbox_embed: bool = bool(detector_config.freeze_bbox_embed)
+        freeze_cls_embed: bool = bool(detector_config.freeze_cls_embed)
+        if (
+            freeze_backbone
+            or freeze_decoder
+            or freeze_encoder
+            or freeze_bbox_embed
+            or freeze_cls_embed
+        ):
             detector.freeze(
-                backbone=detector_config.freeze_backbone,
-                decoder=detector_config.freeze_decoder,
+                backbone=freeze_backbone,
+                decoder=freeze_decoder,
+                encoder=freeze_encoder,
+                bbox_embed=freeze_bbox_embed,
+                cls_embed=freeze_cls_embed,
             )
         return detector
 

@@ -111,3 +111,22 @@ projector, decoder и heads продолжают исполняться кодо
 Лёгкие contract-тесты используют структурный stand-in upstream-модуля и не
 скачивают веса. Они проверяют baseline-эквивалентность, подмену queries,
 кодирование context frames, freeze и загрузку directory provider.
+
+## Нативное обучение без COCO-файлов
+
+`ComponentRFDetrModule` наследует официальный `RFDETRModelModule`: component-built
+модель инжектируется после безопасной инициализации без повторной загрузки весов.
+В результате training/validation steps, matcher/criterion, optimizer/scheduler,
+AMP, EMA, COCO evaluation и checkpoint callbacks остаются реализацией RF-DETR.
+
+`ProjectRFDetrDataModule` возвращает существующие project DataLoader endpoints и в
+`on_before_batch_transfer` переводит `(DetectionBatch, ContextBatch)` в upstream
+`(NestedTensor, targets)`. Это сохраняет единый preprocessing targets и изображений,
+но снимает требование RF-DETR к физической COCO-структуре каталогов. Image-only
+обучение требует `data.context_k=0`; контекстные кадры намеренно отклоняются, потому
+что официальный training criterion не определяет для них семантику.
+
+Интеграция находится в `src/context_detection/models/rfdetr_training.py`, а рабочий
+пример — в `experiments/rfdetr_image`. Зависимость фиксируется как
+`rfdetr[train]==1.9.0`, чтобы Lightning stack был доступен и локально, и на
+Datasphere.

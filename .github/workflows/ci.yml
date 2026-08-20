@@ -44,5 +44,6 @@ jobs:
       # нельзя. CPU-колёса: GPU не нужен, обычный индекс тянет ~2.5 ГБ CUDA.
       # Именно --index-url, а не --extra-index-url: второй не заменяет PyPI, а
       # добавляется к нему, и pip всё равно резолвит CUDA-сборку по версии.
-      - run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+      - run: pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+      - run: pip install -e ".[dev]"
       - run: pytest -q
