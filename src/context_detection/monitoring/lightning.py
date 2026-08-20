@@ -484,7 +484,7 @@ class MeMOTMonitoringCallback(RFDetrMonitoringCallback):
                     self._predictions.append(_cpu_mapping(prediction))
                     self._targets.append(_cpu_mapping(target))
 
-        tracking_predictions = outputs.get("tracking_predictions")
+        tracking_predictions = outputs.get("visualization_predictions")
         tracking_targets = outputs.get("tracking_targets")
         if isinstance(tracking_predictions, list) and isinstance(
             tracking_targets, list
@@ -492,8 +492,7 @@ class MeMOTMonitoringCallback(RFDetrMonitoringCallback):
             remaining = self.max_diagnostic_images - len(self._tracking_targets)
             sequential_images = [
                 image.detach().cpu()
-                for step_index, (detection, _) in enumerate(batch.steps)
-                if bool(batch.supervision_mask[step_index].any())
+                for detection, _ in batch.steps
                 for image in detection.images
             ]
             self._tracking_images.extend(sequential_images[:remaining])
@@ -591,6 +590,7 @@ class MeMOTMonitoringCallback(RFDetrMonitoringCallback):
                 self.class_names,
                 path,
                 max_frames=self.max_visual_images,
+                total_duration_ms=10_000,
             )
             self.run.log_media(
                 "MeMOT prediction animations", "validation sequence", epoch, path

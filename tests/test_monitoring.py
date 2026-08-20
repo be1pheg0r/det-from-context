@@ -240,6 +240,11 @@ def test_tracking_diagnostics_render_nonempty_png_artifacts(tmp_path: Path) -> N
         assert path.stat().st_size > 1_000
     with Image.open(tmp_path / "tracks.gif") as animation:
         assert animation.n_frames == 2
+        durations = []
+        for frame_index in range(animation.n_frames):
+            animation.seek(frame_index)
+            durations.append(animation.info["duration"])
+        assert sum(durations) == 10_000
 
 
 def test_memot_callback_publishes_prediction_gif_every_epoch(tmp_path: Path) -> None:

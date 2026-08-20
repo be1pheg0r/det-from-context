@@ -187,10 +187,18 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
         last_targets: list[dict[str, Tensor]] | None = None
         tracking_predictions: list[dict[str, Any]] = []
         tracking_targets: list[dict[str, Any]] = []
+        visualization_predictions: list[dict[str, Any]] = []
 
         for step_index, (detection, context) in enumerate(batch.steps):
             prior_state = state
             output, state = self.tracker(detection, context, state)
+            visualization_predictions.extend(
+                tracking_output_to_predictions(
+                    output,
+                    detection,
+                    score_threshold=self.config.logging.prediction_score_threshold,
+                )
+            )
             supervision = batch.supervision_mask[step_index]
             if not bool(supervision.any()):
                 continue
@@ -263,6 +271,7 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
             "targets": last_targets,
             "tracking_predictions": tracking_predictions,
             "tracking_targets": tracking_targets,
+            "visualization_predictions": visualization_predictions,
             "memot": last_output.aux.get("memot", {}),
         }
 

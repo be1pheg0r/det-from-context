@@ -63,7 +63,7 @@ def render_tracking_gif(
     path: Path,
     *,
     max_frames: int,
-    duration_ms: int = 500,
+    total_duration_ms: int = 10_000,
 ) -> None:
     """Render one validation sequence with predicted identities as an animated GIF."""
     records = list(zip(images, predictions, strict=False))
@@ -94,11 +94,12 @@ def render_tracking_gif(
         plt.close(figure)
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    frame_duration_ms = max(1, round(total_duration_ms / len(frames)))
     frames[0].save(
         path,
         save_all=True,
         append_images=frames[1:],
-        duration=duration_ms,
+        duration=frame_duration_ms,
         loop=0,
     )
 
