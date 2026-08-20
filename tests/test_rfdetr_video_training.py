@@ -25,6 +25,7 @@ from context_detection.models.memot import (
 )
 from context_detection.models.rfdetr_training import (
     ComponentRFDetrMeMOTModule,
+    ProjectRFDetrDataModule,
     _clip_to_device,
 )
 
@@ -250,3 +251,17 @@ def test_clip_contract_moves_targets_and_supervision_together() -> None:
         assert detection.images.device.type == "cpu"
         assert detection.targets[0]["track_ids"].device.type == "cpu"
         assert context.valid_mask.device.type == "cpu"
+
+
+def test_native_datamodule_preserves_clip_contract() -> None:
+    loader = SimpleNamespace(dataset=[0])
+    datamodule = ProjectRFDetrDataModule(
+        {"train": loader, "validation": loader},  # type: ignore[arg-type]
+        block_size=16,
+        class_names=["car", "person"],
+    )
+    clip = _clip("tracking")
+
+    transferred = datamodule.on_before_batch_transfer(clip, 0)
+
+    assert transferred is clip
