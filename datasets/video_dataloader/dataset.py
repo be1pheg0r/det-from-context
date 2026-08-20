@@ -360,6 +360,11 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
         transformed = self._transform_clip(images, targets)
         steps: list[dict[str, Any]] = []
         supervision: list[bool] = []
+        clip_sequence_id = (
+            f"{record.sequence_id}@{spec.timestamps_ms[0]:.3f}"
+            if record.mode == "tracking"
+            else record.sequence_id
+        )
         for step, ((image, target), timestamp_ms, annotation_index) in enumerate(
             zip(
                 transformed,
@@ -375,7 +380,7 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                 {
                     "image": image,
                     "target": target,
-                    "sequence_id": record.sequence_id,
+                    "sequence_id": clip_sequence_id,
                     "frame_id": int(round(timestamp_ms)),
                     "timestamp": timestamp_ms / 1000.0,
                     "is_sequence_start": spec.sequence_start and step == 0,

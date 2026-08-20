@@ -126,6 +126,10 @@ class _Harness(ComponentRFDetrMeMOTModule):
             for index, size in enumerate(sizes)
         ]
         self.logged: dict[str, Tensor] = {}
+        self.validation_tracking_result: dict[str, float | str] = {}
+        self._validation_tracking_predictions: list[dict[str, Any]] = []
+        self._validation_tracking_targets: list[dict[str, Any]] = []
+        self._validation_annotation_modes: set[str] = set()
 
     def log_dict(
         self, dictionary: dict[str, Tensor], *args: Any, **kwargs: Any
@@ -223,6 +227,17 @@ def test_reference_frame_clip_only_supervises_final_detection() -> None:
     assert "val/loss_detection" in module.logged
     assert "val/loss_association" not in module.logged
     assert len(result["results"]) == 1
+
+
+def test_validation_epoch_publishes_tracking_availability() -> None:
+    module = _Harness(_tracker(), _Criterion())
+    module.on_validation_epoch_start()
+
+    module.validation_step(_clip("tracking"), 0)
+    module.on_validation_epoch_end()
+
+    assert module.validation_tracking_result["tracking_available"] == 1.0
+    assert "tracking_hota" in module.validation_tracking_result
 
 
 def test_clip_contract_moves_targets_and_supervision_together() -> None:

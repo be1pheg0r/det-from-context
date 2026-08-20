@@ -21,6 +21,7 @@ from ..contracts import (
     DetectionClipBatch,
     DetectorOutput,
 )
+from ..tracking import tracking_metrics, tracking_output_to_predictions
 from .memory import MeMOTState
 from .memot import MeMOTTracker
 from .rfdetr import RFDetrAdapter
@@ -86,6 +87,10 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
         # Avoid registering the detector/model a second time on the Lightning
         # module; the tracker references the exact modules attached above.
         self.__dict__["_tracker"] = tracker
+        self.validation_tracking_result: dict[str, float | str] = {}
+        self._validation_tracking_predictions: list[dict[str, Any]] = []
+        self._validation_tracking_targets: list[dict[str, Any]] = []
+        self._validation_annotation_modes: set[str] = set()
 
     @property
     def tracker(self) -> MeMOTTracker:
@@ -129,7 +134,41 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
     ) -> dict[str, Any]:
         """Evaluate the last supervised frame and log clip-level losses."""
         del batch_idx
-        return self._clip_step(batch, stage="val")
+        result = self._clip_step(batch, stage="val")
+        self._validation_tracking_predictions.extend(result["tracking_predictions"])
+        self._validation_tracking_targets.extend(result["tracking_targets"])
+        self._validation_annotation_modes.add(batch.mode)
+        return result
+
+    def on_validation_epoch_start(self) -> None:
+        """Reset sequence records before accumulating a validation epoch."""
+        self._validation_tracking_predictions = []
+        self._validation_tracking_targets = []
+        self._validation_annotation_modes = set()
+
+    def on_validation_epoch_end(self) -> None:
+        """Log true tracking metrics or preserve an explicit unavailable reason."""
+        mode = (
+            next(iter(self._validation_annotation_modes))
+            if len(self._validation_annotation_modes) == 1
+            else "mixed"
+        )
+        result = tracking_metrics(
+            self._validation_tracking_predictions,
+            self._validation_tracking_targets,
+            annotation_mode=mode,
+        )
+        self.validation_tracking_result = result.as_dict()
+        if result.available:
+            self.log_dict(
+                {
+                    f"val/tracking_{name}": value
+                    for name, value in result.metrics.items()
+                },
+                on_step=False,
+                on_epoch=True,
+                sync_dist=False,
+            )
 
     def test_step(self, batch: DetectionClipBatch, batch_idx: int) -> dict[str, Any]:
         """Reuse validation semantics for a fixed held-out tracking split."""
@@ -146,6 +185,8 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
         supervised_steps = 0
         last_output: DetectorOutput | None = None
         last_targets: list[dict[str, Tensor]] | None = None
+        tracking_predictions: list[dict[str, Any]] = []
+        tracking_targets: list[dict[str, Any]] = []
 
         for step_index, (detection, context) in enumerate(batch.steps):
             prior_state = state
@@ -188,6 +229,14 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
             supervised_steps += 1
             last_output = output
             last_targets = targets
+            tracking_predictions.extend(
+                tracking_output_to_predictions(
+                    output,
+                    detection,
+                    score_threshold=self.config.logging.prediction_score_threshold,
+                )
+            )
+            tracking_targets.extend(_tracking_targets(detection))
 
         if not supervised_steps or last_output is None or last_targets is None:
             raise ValueError("video clip contains no supervised frame")
@@ -208,7 +257,13 @@ class ComponentRFDetrMeMOTModule(ComponentRFDetrModule):
             },
             orig_sizes,
         )
-        return {"loss": loss, "results": results, "targets": last_targets}
+        return {
+            "loss": loss,
+            "results": results,
+            "targets": last_targets,
+            "tracking_predictions": tracking_predictions,
+            "tracking_targets": tracking_targets,
+        }
 
     def _tracking_losses(
         self,
@@ -445,6 +500,18 @@ def _clip_to_device(
         supervision_mask=batch.supervision_mask.to(device),
         mode=batch.mode,
     )
+
+
+def _tracking_targets(batch: DetectionBatch) -> list[dict[str, Any]]:
+    """Attach sequence/frame identity to target dictionaries for MOT metrics."""
+    return [
+        {
+            **{name: value.detach().cpu() for name, value in target.items()},
+            "sequence_id": batch.sequence_id[index],
+            "frame_id": int(batch.frame_id[index]),
+        }
+        for index, target in enumerate(batch.targets)
+    ]
 
 
 def build_rfdetr_train_config(
