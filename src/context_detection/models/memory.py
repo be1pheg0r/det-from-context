@@ -128,6 +128,8 @@ class MeMOTState(MemoryState):
     missed: Tensor  # [B, S] int64, последовательных пропущенных кадров
     clock: Tensor  # [B] float32, время последнего обработанного кадра
     evicted: Tensor  # [B] int64, вытеснений на последней записи
+    track_id: Tensor  # [B, S] int64, стабильный runtime ID или -1
+    next_track_id: Tensor  # [B] int64, следующий ID внутри sequence
 
     @model_validator(mode="after")
     def _check_memot(self) -> Self:
@@ -160,6 +162,16 @@ class MeMOTState(MemoryState):
             raise ValueError("evicted должен иметь форму [B]")
         if self.evicted.dtype != torch.int64 or self.evicted.lt(0).any():
             raise ValueError("evicted должен быть неотрицательным int64")
+        if self.track_id.shape != (batch_size, num_slots):
+            raise ValueError("track_id должен иметь форму [B, S]")
+        if self.track_id.dtype != torch.int64 or self.track_id.lt(-1).any():
+            raise ValueError("track_id должен быть int64 со значениями >= -1")
+        if (self.valid & self.track_id.lt(0)).any():
+            raise ValueError("каждый занятый MeMOT slot должен иметь track_id")
+        if self.next_track_id.shape != (batch_size,):
+            raise ValueError("next_track_id должен иметь форму [B]")
+        if self.next_track_id.dtype != torch.int64 or self.next_track_id.lt(0).any():
+            raise ValueError("next_track_id должен быть неотрицательным int64")
         devices: set[torch.device] = {
             self.feature.device,
             self.history_feature.device,
@@ -169,6 +181,8 @@ class MeMOTState(MemoryState):
             self.missed.device,
             self.clock.device,
             self.evicted.device,
+            self.track_id.device,
+            self.next_track_id.device,
         }
         if len(devices) != 1:
             raise ValueError("поля MeMOTState находятся на разных device")
@@ -225,6 +239,10 @@ class MeMOTState(MemoryState):
             missed=torch.zeros(batch_size, num_slots, device=device, dtype=torch.int64),
             clock=torch.zeros(batch_size, device=device, dtype=torch.float32),
             evicted=torch.zeros(batch_size, device=device, dtype=torch.int64),
+            track_id=torch.full(
+                (batch_size, num_slots), -1, device=device, dtype=torch.int64
+            ),
+            next_track_id=torch.zeros(batch_size, device=device, dtype=torch.int64),
         )
 
     def detach(self) -> MeMOTState:
@@ -239,6 +257,8 @@ class MeMOTState(MemoryState):
             missed=self.missed,
             clock=self.clock.detach(),
             evicted=self.evicted,
+            track_id=self.track_id,
+            next_track_id=self.next_track_id,
         )
 
     def reset(self, mask: Tensor) -> MeMOTState:
@@ -278,17 +298,27 @@ class MeMOTState(MemoryState):
             ),
             clock=torch.where(mask, torch.zeros_like(self.clock), self.clock),
             evicted=torch.where(mask, torch.zeros_like(self.evicted), self.evicted),
+            track_id=torch.where(
+                expanded_slot_mask,
+                torch.full_like(self.track_id, -1),
+                self.track_id,
+            ),
+            next_track_id=torch.where(
+                mask,
+                torch.zeros_like(self.next_track_id),
+                self.next_track_id,
+            ),
         )
 
 
 class MeMOTMemory(ContextModule):
-    """MeMOT-inspired memory encoder with explicit internal track slots.
+    """MeMOT track history and lifecycle with explicit internal slots.
 
     A slot is no longer tied to a DETR query index. Predictions are associated
     one-to-one with existing slots using motion-compensated boxes and identity
     embeddings; unmatched confident predictions create or replace slots.
-    This implements the memory-encoding half of MeMOT. A faithful Memory
-    Decoder still requires separate proposal/track queries in DetectorAdapter.
+    ``MeMOTMemoryEncoder`` exposes its short/long temporal encoding and the
+    external ``MeMOTMemoryDecoder`` consumes that encoding after RF-DETR.
     """
 
     def __init__(
@@ -341,6 +371,12 @@ class MeMOTMemory(ContextModule):
     @staticmethod
     def _context_horizon(context: ContextBatch) -> Tensor:
         """Временной масштаб доступного контекста, не считая padding."""
+        if context.time_offsets.shape[1] == 0:
+            return torch.ones(
+                context.time_offsets.shape[0],
+                device=context.time_offsets.device,
+                dtype=context.time_offsets.dtype,
+            )
         offsets: Tensor = context.time_offsets.masked_fill(~context.valid_mask, 0.0)
         horizon: Tensor = offsets.amax(dim=-1)
         return torch.where(horizon > 0, horizon, torch.ones_like(horizon))
@@ -550,10 +586,7 @@ class MeMOTMemory(ContextModule):
         history: Tensor = memot_state.history_feature.to(dtype=queries.dtype)
         history = history + self.time_projection(temporal_input)
         history_valid: Tensor = memot_state.history_valid
-        context_available: Tensor = context.valid_mask.any(dim=-1, keepdim=True)
-        active: Tensor = (
-            memot_state.valid & history_valid.any(dim=-1) & context_available
-        )
+        active: Tensor = memot_state.valid & history_valid.any(dim=-1)
         latest: Tensor = self._latest(history, history_valid)
         flat_latest: Tensor = latest.flatten(0, 1).unsqueeze(1)
 
@@ -706,6 +739,14 @@ class MeMOTMemory(ContextModule):
         )
         dmat: Tensor = memot_state.dmat.clone()
         evicted: Tensor = torch.zeros_like(memot_state.evicted)
+        track_id: Tensor = memot_state.track_id.clone()
+        next_track_id: Tensor = memot_state.next_track_id.clone()
+        proposal_track_ids: Tensor = torch.full(
+            confidence.shape, -1, device=confidence.device, dtype=torch.int64
+        )
+        proposal_slots: Tensor = torch.full(
+            confidence.shape, -1, device=confidence.device, dtype=torch.int64
+        )
         history_feature: Tensor = torch.cat(
             (
                 memot_state.history_feature[:, :, 1:],
@@ -804,6 +845,7 @@ class MeMOTMemory(ContextModule):
                 history_feature[batch_index, reset_slots] = 0
                 history_valid[batch_index, reset_slots] = False
                 history_timestamp[batch_index, reset_slots] = 0
+                track_id[batch_index, reset_slots] = -1
 
             for local_index, detection_index in enumerate(detection_indices):
                 slot: int = int(assignments[local_index])
@@ -828,6 +870,8 @@ class MeMOTMemory(ContextModule):
                     )
                 else:
                     age[batch_index, slot] = 1
+                    track_id[batch_index, slot] = next_track_id[batch_index]
+                    next_track_id[batch_index] += 1
 
                 feature[batch_index, slot] = features[batch_index, detection]
                 box[batch_index, slot] = boxes[batch_index, detection]
@@ -843,6 +887,12 @@ class MeMOTMemory(ContextModule):
                 ]
                 history_valid[batch_index, slot, -1] = True
                 history_timestamp[batch_index, slot, -1] = current_time[batch_index]
+                proposal_track_ids[batch_index, detection] = track_id[batch_index, slot]
+                proposal_slots[batch_index, detection] = slot
+
+        memot_aux = output.aux.setdefault("memot", {})
+        memot_aux["track_ids"] = proposal_track_ids
+        memot_aux["slot_indices"] = proposal_slots
 
         return MeMOTState(
             feature=feature,
@@ -860,6 +910,8 @@ class MeMOTMemory(ContextModule):
             missed=missed,
             clock=current_time,
             evicted=evicted,
+            track_id=track_id,
+            next_track_id=next_track_id,
         )
 
 

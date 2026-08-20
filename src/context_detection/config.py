@@ -115,6 +115,7 @@ class ContextConfig(_Section):
     association_cosine_threshold: float = Field(0.5, ge=-1.0, le=1.0)
     association_appearance_weight: float = Field(0.25, ge=0.0)
     motion_momentum: float = Field(0.8, ge=0.0, lt=1.0)
+    memory_decoder_layers: int = Field(2, gt=0)
     write_gate: bool = False
     motion: str | None = None
     horizon: int = Field(0, ge=0)

@@ -11,9 +11,8 @@ from torch import nn
 
 from context_detection.config import ExperimentConfig
 from context_detection.models.detector import DetectorAdapter
-from context_detection.models.protocols import build_context_module
+from context_detection.models.protocols import build_context_model
 from context_detection.models.rfdetr import RFDetrAdapter, RFDetrVariant
-from context_detection.models.wrapper import ContextDetector
 
 
 class RFDetrSettings(BaseModel):
@@ -89,12 +88,7 @@ class RFDetrProtocol:
 
     def build(self, config: ExperimentConfig) -> nn.Module:
         """Собрать публичный ContextDetector endpoint."""
-        return ContextDetector(
-            detector=self.build_detector(config),
-            context_module=build_context_module(config),
-            fusion=config.context.fusion,
-            detach_state=config.train.detach_state,
-        )
+        return build_context_model(self.build_detector(config), config)
 
     @staticmethod
     def _load_settings(config: ExperimentConfig) -> RFDetrSettings:
