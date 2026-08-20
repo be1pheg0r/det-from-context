@@ -67,6 +67,10 @@ validation:
 logging:
   level: INFO
   every_n_steps: 20
+  visualize_every_n_epochs: 1
+  max_visual_images: 4
+  max_diagnostic_images: 256
+  prediction_score_threshold: 0.25
 output:
   root: /job/s3/bt17f0k57rfieh6jugr8/rfdetr-image-runs
   checkpoint_every_n_epochs: 1

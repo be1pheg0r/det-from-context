@@ -18,6 +18,11 @@ from context_detection.models.rfdetr_training import (
     ProjectRFDetrDataModule,
     build_rfdetr_train_config,
 )
+from context_detection.monitoring import (
+    ExperimentLightningLogger,
+    MetricHistory,
+    RFDetrMonitoringCallback,
+)
 
 
 class RFDetrImageExperiment:
@@ -68,11 +73,25 @@ class RFDetrImageExperiment:
             block_size=block_size,
             class_names=self.class_names,
         )
+        history = MetricHistory()
+        logger = ExperimentLightningLogger(self.experiment, history)
         trainer: Trainer = build_trainer(
             train_config,
             module.model_config,
             accelerator=train_config.accelerator,
-            logger=False,
+            logger=logger,
+        )
+        trainer.callbacks.append(
+            RFDetrMonitoringCallback(
+                self.experiment,
+                logger,
+                class_names=self.class_names,
+                every_n_steps=self.config.logging.every_n_steps,
+                visualize_every_n_epochs=(self.config.logging.visualize_every_n_epochs),
+                max_visual_images=self.config.logging.max_visual_images,
+                max_diagnostic_images=self.config.logging.max_diagnostic_images,
+                score_threshold=(self.config.logging.prediction_score_threshold),
+            )
         )
         self._record_runtime_metadata(module, trainer, has_test)
         trainer.fit(module, datamodule=datamodule, ckpt_path=train_config.resume)

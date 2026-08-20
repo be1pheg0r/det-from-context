@@ -276,6 +276,12 @@ class ExperimentRun:
         self.tracker.log_metrics(normalized, step, split)
         self._logger.info("metrics split=%s step=%d values=%s", split, step, normalized)
 
+    def log_message(self, message: str, level: int = logging.INFO) -> None:
+        """Write one message to both the run file and the live console stream."""
+        if self.status is not RunStatus.RUNNING:
+            raise RuntimeError("messages can only be written to an active run")
+        self._logger.log(level, message)
+
     def save_artifact(self, name: str, source: str | Path) -> Path:
         """Скопировать файл в запуск и передать его backend-у.
 
@@ -310,11 +316,15 @@ class ExperimentRun:
         summary_path: Path = self.root / ResultEntry.SUMMARY
         _write_json(summary_path, dict(summary or {}))
         self.tracker.upload_artifact("summary", summary_path)
+        self._logger.info("experiment completed")
+        self._flush_logger()
+        self.tracker.upload_artifact(
+            "experiment.log", self.root / ResultEntry.LOGS / "experiment.log"
+        )
         self.tracker.complete()
         self.status = RunStatus.COMPLETED
         self._metadata["finished_at"] = _utc_now()
         self._write_metadata()
-        self._logger.info("experiment completed")
         self._close_logger()
 
     def fail(self, error: BaseException) -> None:
@@ -322,15 +332,22 @@ class ExperimentRun:
         if self.status is not RunStatus.RUNNING:
             return
         reason: str = f"{type(error).__name__}: {error}"
+        self._logger.error(
+            "experiment failed",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self._flush_logger()
+        try:
+            self.tracker.upload_artifact(
+                "experiment.log", self.root / ResultEntry.LOGS / "experiment.log"
+            )
+        except Exception:
+            self._logger.exception("failed to upload experiment log")
         self.tracker.fail(reason)
         self.status = RunStatus.FAILED
         self._metadata["finished_at"] = _utc_now()
         self._metadata["error"] = reason
         self._write_metadata()
-        self._logger.error(
-            "experiment failed",
-            exc_info=(type(error), error, error.__traceback__),
-        )
         self._close_logger()
 
     def __enter__(self) -> ExperimentRun:
@@ -354,13 +371,22 @@ class ExperimentRun:
         logger: logging.Logger = logging.getLogger(f"experiment.{self.root.name}")
         logger.setLevel(self.config.logging.level.value)
         logger.propagate = False
-        handler: logging.FileHandler = logging.FileHandler(
+        formatter = logging.Formatter(self._LOG_FORMAT)
+        file_handler: logging.FileHandler = logging.FileHandler(
             self.root / ResultEntry.LOGS / "experiment.log",
             encoding="utf-8",
         )
-        handler.setFormatter(logging.Formatter(self._LOG_FORMAT))
-        logger.addHandler(handler)
+        file_handler.setFormatter(formatter)
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        logger.addHandler(stream_handler)
         return logger
+
+    def _flush_logger(self) -> None:
+        """Flush all local handlers before an artifact upload or process exit."""
+        for handler in self._logger.handlers:
+            handler.flush()
 
     def _close_logger(self) -> None:
         for handler in tuple(self._logger.handlers):

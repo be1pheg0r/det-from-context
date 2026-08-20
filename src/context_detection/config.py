@@ -168,6 +168,10 @@ class LoggingConfig(_Section):
 
     level: LogLevel = LogLevel.INFO
     every_n_steps: int = Field(20, gt=0)
+    visualize_every_n_epochs: int = Field(1, gt=0)
+    max_visual_images: int = Field(4, gt=0, le=32)
+    max_diagnostic_images: int = Field(256, gt=0)
+    prediction_score_threshold: float = Field(0.25, ge=0.0, le=1.0)
 
 
 class OutputConfig(_Section):
