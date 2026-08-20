@@ -12,6 +12,7 @@ Expected target format per frame:
         "instance_ids": Tensor[N]   # REQUIRED for MOT training
     }
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -29,6 +30,7 @@ from .memory import MeMOTMemory, MeMOTState
 # ---------------------------------------------------------------------------
 # Small utilities
 # ---------------------------------------------------------------------------
+
 
 def _focal_binary(
     logits: Tensor, target: Tensor, alpha: float = 0.25, gamma: float = 2.0
@@ -78,11 +80,12 @@ def _hungarian(cost: Tensor) -> tuple[Tensor, Tensor]:
 # Runtime state: detector/memory state + stable external track IDs.
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class MeMOTRuntimeState:
     memory: MeMOTState
-    track_ids: Tensor       # [B,S], int64; -1 means slot has no public identity yet
-    next_track_id: Tensor   # [B], int64
+    track_ids: Tensor  # [B,S], int64; -1 means slot has no public identity yet
+    next_track_id: Tensor  # [B], int64
 
     def detach(self):
         return MeMOTRuntimeState(
@@ -130,6 +133,7 @@ class MeMOTOutput:
 # ---------------------------------------------------------------------------
 # MeMOT model
 # ---------------------------------------------------------------------------
+
 
 class RFDETRMeMOT(nn.Module):
     """Full MeMOT-style tracker using the project's RF-DETR adapter.
@@ -182,8 +186,9 @@ class RFDETRMeMOT(nn.Module):
         self.register_buffer("_dummy", torch.empty(0), persistent=False)
 
     # ------------------------ state helpers ------------------------
-    def init_state(self, batch_size: int, device: torch.device | str) \
-    -> MeMOTRuntimeState:
+    def init_state(
+        self, batch_size: int, device: torch.device | str
+    ) -> MeMOTRuntimeState:
         memory = MeMOTState.create(
             batch_size=batch_size,
             num_slots=self.memory.num_slots,
@@ -255,8 +260,9 @@ class RFDETRMeMOT(nn.Module):
         )
         if ctx.memory_state is not None:
             state.memory = ctx.memory_state
-        delta = ctx.query_delta if ctx.query_delta is not None \
-            else torch.zeros_like(base)
+        delta = (
+            ctx.query_delta if ctx.query_delta is not None else torch.zeros_like(base)
+        )
         track_all = self.query_norm(base + delta)
         tracks: list[Tensor] = []
         slots: list[Tensor] = []
@@ -384,9 +390,7 @@ class RFDETRMeMOT(nn.Module):
         track_boxes_padded = track_boxes_padded.masked_fill(~track_mask[..., None], 0.0)
 
         # Build a compact public identity matrix [B,max_tracks].
-        track_ids = torch.full(
-            (b, max_tracks), -1, dtype=torch.long, device=device
-        )
+        track_ids = torch.full((b, max_tracks), -1, dtype=torch.long, device=device)
         for bi, idx in enumerate(slot_lists):
             if idx.numel():
                 track_ids[bi, : idx.numel()] = state.track_ids[bi, idx]
@@ -404,7 +408,8 @@ class RFDETRMeMOT(nn.Module):
                 track_ids=track_ids,
                 track_slot_indices=torch.nn.utils.rnn.pad_sequence(
                     slot_lists, batch_first=True, padding_value=-1
-                ) if slot_lists
+                )
+                if slot_lists
                 else torch.empty((b, 0), dtype=torch.long, device=device),
                 proposal_queries=proposal_q,
                 track_queries=track_q,
@@ -471,8 +476,15 @@ class RFDETRMeMOT(nn.Module):
         p_uni = output.proposal_uniqueness[0]
         p_box = output.proposal_boxes[0]
         loss_prop = self._tracking_entry_loss(
-            p_obj, p_uni, p_box, p_obj_t, p_uni_t, p_box_t,
-            lambda_cls, lambda_l1, lambda_iou,
+            p_obj,
+            p_uni,
+            p_box,
+            p_obj_t,
+            p_uni_t,
+            p_box_t,
+            lambda_cls,
+            lambda_l1,
+            lambda_iou,
         )
 
         # ---- track-query targets ----
@@ -493,8 +505,15 @@ class RFDETRMeMOT(nn.Module):
                     track_box_t[j] = gt_boxes[k]
 
         loss_track = self._tracking_entry_loss(
-            t_obj, t_uni, t_box, track_obj_t, track_uni_t, track_box_t,
-            lambda_cls, lambda_l1, lambda_iou,
+            t_obj,
+            t_uni,
+            t_box,
+            track_obj_t,
+            track_uni_t,
+            track_box_t,
+            lambda_cls,
+            lambda_l1,
+            lambda_iou,
         )
 
         total = lambda_tck * (loss_track + loss_prop) + lambda_det * aux_loss
@@ -542,8 +561,9 @@ class RFDETRMeMOT(nn.Module):
         if gt_boxes.numel() == 0:
             return obj, uni, boxes, pred_boxes.new_zeros(0, dtype=torch.long)
 
-        cost = (torch.cdist(pred_boxes, gt_boxes, p=1) -
-            _pairwise_iou(pred_boxes, gt_boxes))
+        cost = torch.cdist(pred_boxes, gt_boxes, p=1) - _pairwise_iou(
+            pred_boxes, gt_boxes
+        )
         row, col = _hungarian(cost)
         obj[row] = 1.0
         boxes[row] = gt_boxes[col]
@@ -606,6 +626,7 @@ class RFDETRMeMOT(nn.Module):
 # Training helper
 # ---------------------------------------------------------------------------
 
+
 class MeMOTClipTrainer:
     """Minimal clip-centric trainer compatible with the project's contracts.
 
@@ -629,28 +650,30 @@ class MeMOTClipTrainer:
         self.detach_state = detach_state
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp)
 
-    def train_epoch(self, loader: Iterable[tuple[DetectionBatch, ContextBatch]]) \
--> dict[str, float]:
+    def train_epoch(
+        self, loader: Iterable[tuple[DetectionBatch, ContextBatch]]
+    ) -> dict[str, float]:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
         state: MeMOTRuntimeState | None = None
         seen_by_batch: list[set[int]] | None = None
         total = {
-            "loss_total": 0.0, "loss_track": 0.0, "loss_proposal": 0.0,
-             "loss_aux_det": 0.0
+            "loss_total": 0.0,
+            "loss_track": 0.0,
+            "loss_proposal": 0.0,
+            "loss_aux_det": 0.0,
         }
         steps = 0
 
         for step, (batch, context) in enumerate(loader):
             if batch.batch_size != 1:
-                raise ValueError(
-                    "MeMOTClipTrainer intentionally requires batch_size=1"
-                )
+                raise ValueError("MeMOTClipTrainer intentionally requires batch_size=1")
             if state is None:
                 state = self.model.init_state(1, batch.images.device)
                 seen_by_batch = [set()]
-            elif (batch.is_sequence_start is not None
-                  and bool(batch.is_sequence_start[0])):
+            elif batch.is_sequence_start is not None and bool(
+                batch.is_sequence_start[0]
+            ):
                 state = state.reset(batch.is_sequence_start)
                 seen_by_batch = [set()]
 

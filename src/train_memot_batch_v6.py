@@ -175,7 +175,6 @@ def make_context(
     )
 
 
-
 def make_batch(
     images: torch.Tensor,
     targets: list[dict[str, torch.Tensor]],
@@ -198,8 +197,10 @@ def make_batch(
         sequence_id=sequence_ids,
         frame_id=torch.full((b,), frame_index, dtype=torch.long, device=device),
         timestamp=torch.full(
-            (b,), frame_index / max(fps, 1e-6),
-            dtype=torch.float32, device=device,
+            (b,),
+            frame_index / max(fps, 1e-6),
+            dtype=torch.float32,
+            device=device,
         ),
         is_sequence_start=sequence_start.to(device),
     )
@@ -293,16 +294,10 @@ def box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     wh = (rb - lt).clamp_min(0)
     inter = wh[..., 0] * wh[..., 1]
 
-    area_a = (a[:, 2] - a[:, 0]).clamp_min(0) * (
-        a[:, 3] - a[:, 1]
-    ).clamp_min(0)
-    area_b = (b[:, 2] - b[:, 0]).clamp_min(0) * (
-        b[:, 3] - b[:, 1]
-    ).clamp_min(0)
+    area_a = (a[:, 2] - a[:, 0]).clamp_min(0) * (a[:, 3] - a[:, 1]).clamp_min(0)
+    area_b = (b[:, 2] - b[:, 0]).clamp_min(0) * (b[:, 3] - b[:, 1]).clamp_min(0)
 
-    return inter / (
-        area_a[:, None] + area_b[None, :] - inter
-    ).clamp_min(1e-6)
+    return inter / (area_a[:, None] + area_b[None, :] - inter).clamp_min(1e-6)
 
 
 def match_active_tracks(
@@ -327,18 +322,20 @@ def match_active_tracks(
 def _slice_detector_output(output: DetectorOutput, index: int) -> DetectorOutput:
     def slice_value(value):
         if torch.is_tensor(value) and value.ndim > 0 and value.shape[0] > index:
-            return value[index:index + 1]
+            return value[index : index + 1]
         return value
 
     return DetectorOutput(
-        logits=output.logits[index:index + 1],
-        boxes=output.boxes[index:index + 1],
-        queries=output.queries[index:index + 1],
-        reference_points=output.reference_points[index:index + 1],
+        logits=output.logits[index : index + 1],
+        boxes=output.boxes[index : index + 1],
+        queries=output.queries[index : index + 1],
+        reference_points=output.reference_points[index : index + 1],
         features=[
-            feature[index:index + 1]
-            if torch.is_tensor(feature) and feature.ndim > 0
-            and feature.shape[0] > index else feature
+            feature[index : index + 1]
+            if torch.is_tensor(feature)
+            and feature.ndim > 0
+            and feature.shape[0] > index
+            else feature
             for feature in output.features
         ],
         decoder_layers=[
@@ -353,16 +350,16 @@ def slice_memot_output(output: MeMOTOutput, index: int) -> MeMOTOutput:
     return MeMOTOutput(
         detector=_slice_detector_output(output.detector, index),
         proposal=_slice_detector_output(output.proposal, index),
-        proposal_boxes=output.proposal_boxes[index:index + 1],
-        proposal_objectness=output.proposal_objectness[index:index + 1],
-        proposal_uniqueness=output.proposal_uniqueness[index:index + 1],
-        track_boxes=output.track_boxes[index:index + 1],
-        track_objectness=output.track_objectness[index:index + 1],
-        track_uniqueness=output.track_uniqueness[index:index + 1],
-        track_ids=output.track_ids[index:index + 1],
-        track_slot_indices=output.track_slot_indices[index:index + 1],
-        proposal_queries=output.proposal_queries[index:index + 1],
-        track_queries=output.track_queries[index:index + 1],
+        proposal_boxes=output.proposal_boxes[index : index + 1],
+        proposal_objectness=output.proposal_objectness[index : index + 1],
+        proposal_uniqueness=output.proposal_uniqueness[index : index + 1],
+        track_boxes=output.track_boxes[index : index + 1],
+        track_objectness=output.track_objectness[index : index + 1],
+        track_uniqueness=output.track_uniqueness[index : index + 1],
+        track_ids=output.track_ids[index : index + 1],
+        track_slot_indices=output.track_slot_indices[index : index + 1],
+        proposal_queries=output.proposal_queries[index : index + 1],
+        track_queries=output.track_queries[index : index + 1],
     )
 
 
@@ -372,9 +369,7 @@ def train(args: argparse.Namespace) -> None:
 
     if args.clearml:
         if Task is None:
-            raise RuntimeError(
-                "ClearML is not installed. Run: pip install clearml"
-            )
+            raise RuntimeError("ClearML is not installed. Run: pip install clearml")
 
         Task.set_credentials(
             api_host="http://111.88.249.148:8008",
@@ -445,9 +440,7 @@ def train(args: argparse.Namespace) -> None:
     print(f"Device: {device}")
     print(f"Clip length: {clip_len}")
     print(f"Samples used: {len(loader.dataset)}")
-    print(
-        "Training: 4 history frames -> MeMOT -> reference frame loss"
-    )
+    print("Training: 4 history frames -> MeMOT -> reference frame loss")
 
     for epoch in range(1, args.epochs + 1):
         sums = {
@@ -464,9 +457,7 @@ def train(args: argparse.Namespace) -> None:
 
         for batch_index, (frames, targets) in enumerate(loader):
             if frames.ndim != 5:
-                raise RuntimeError(
-                    f"Expected [B,T,C,H,W], got {tuple(frames.shape)}"
-                )
+                raise RuntimeError(f"Expected [B,T,C,H,W], got {tuple(frames.shape)}")
 
             batch_size, time_steps = frames.shape[:2]
 
@@ -480,9 +471,7 @@ def train(args: argparse.Namespace) -> None:
                 for target in targets
             ]
 
-            sequence_ids = [
-                f"sample_{batch_index}_{i}" for i in range(batch_size)
-            ]
+            sequence_ids = [f"sample_{batch_index}_{i}" for i in range(batch_size)]
             state = None
             context = make_context(device, batch_size, dim=model.detector.dim)
             optimizer.zero_grad(set_to_none=True)
@@ -571,9 +560,7 @@ def train(args: argparse.Namespace) -> None:
                 )
 
             losses = {
-                name: torch.stack(
-                    [item[name] for item in sample_losses]
-                ).mean()
+                name: torch.stack([item[name] for item in sample_losses]).mean()
                 for name in sample_losses[0]
             }
 
@@ -587,10 +574,7 @@ def train(args: argparse.Namespace) -> None:
             scaler.step(optimizer)
             scaler.update()
 
-            vals = {
-                name: float(value.detach().cpu())
-                for name, value in losses.items()
-            }
+            vals = {name: float(value.detach().cpu()) for name, value in losses.items()}
 
             metric_values = {
                 "precision": 0.0,
@@ -615,13 +599,17 @@ def train(args: argparse.Namespace) -> None:
                 step = (epoch - 1) * len(loader) + batch_index
                 for name, value in vals.items():
                     clearml_logger.report_scalar(
-                        title="loss", series=name,
-                        value=value, iteration=step,
+                        title="loss",
+                        series=name,
+                        value=value,
+                        iteration=step,
                     )
                 for name, value in metric_values.items():
                     clearml_logger.report_scalar(
-                        title="metrics", series=name,
-                        value=float(value), iteration=step,
+                        title="metrics",
+                        series=name,
+                        value=float(value),
+                        iteration=step,
                     )
 
             # Extra diagnostics on the reference frame.
@@ -644,10 +632,7 @@ def train(args: argparse.Namespace) -> None:
             )
 
         n_batches = len(loader)
-        epoch_metrics = {
-            name: value / n_batches
-            for name, value in sums.items()
-        }
+        epoch_metrics = {name: value / n_batches for name, value in sums.items()}
         print(
             f"Epoch {epoch}: "
             f"loss={epoch_metrics['loss_total']:.6f} "
@@ -683,6 +668,7 @@ def train(args: argparse.Namespace) -> None:
 
 def unused_function():
     print(rfdetr.sys)
+
 
 if __name__ == "__main__":
     train(parse_args())

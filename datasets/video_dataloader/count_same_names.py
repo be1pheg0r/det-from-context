@@ -59,16 +59,19 @@ def count_matching_files(videos_dir, annotations_dir):
     print("\n" + "=" * 60)
 
     return {
-        'video_count': len(video_names),
-        'annotation_count': len(annotation_names),
-        'common_count': len(common_names),
-        'common_names': common_names
+        "video_count": len(video_names),
+        "annotation_count": len(annotation_names),
+        "common_count": len(common_names),
+        "common_names": common_names,
     }
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     # Пути к директориям
-    videos_dir = "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bd" \
+    videos_dir = (
+        "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bd"
         "d100k/videos/100k/train"
+    )
     annotations_dir = "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/100k/train"
 
     # Запускаем подсчет
