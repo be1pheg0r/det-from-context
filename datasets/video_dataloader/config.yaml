@@ -1,61 +1,45 @@
+name: video_dataloader
+
 dataset:
-  images_dir: "data/images"
-  annotations_dir: "data/json"
+  # Independent roots supplied by DataSphere mounts or environment variables.
+  videos_dir: ${oc.env:VIDEO_DATASET_VIDEOS_DIR,data/videos}
+  annotations_dir: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}
+  annotation_extension: ".json"
+  video_extensions: [".mp4", ".mov", ".avi", ".mkv"]
+  recursive: true
+  strict_pairs: true
+  annotation_mode: auto
+  target_fps: 5.0
+  max_seek_error_ms: 100.0
+  auto_rotate: true
 
-  image_size:
-    width: 1280
-    height: 720
+  # RF-DETR preprocessing. Resolution is owned by detector.variant.
+  patch_size: 16
+  num_windows: 2
+  multi_scale: false
+  expanded_scales: false
+  skip_random_resize: false
+  scale_jitter: true
+  aug_config: null
 
-  normalize_boxes: true
-
-  image_extensions:
-    - ".jpg"
-    - ".jpeg"
-    - ".png"
-
-
-video:
-  videos_dir: "../bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k/test"
-  annotations_dir: "../out/labels3"
-
-  # Опорным является последний кадр последовательности
-  reference_frame: "last"
-
-  # Сколько кадров взять ДО опорного
-  frames_before: 4
-
-  # Сколько кадров в секунду брать
-  fps: 5
-
+splits:
+  train_names: [train]
+  validation_names: [val, validation, valid]
+  test_names: [test]
 
 dataloader:
-  batch_size: 4
+  batch_size: 1
   shuffle: true
-  num_workers: 4
-
-  pin_memory: true
-
+  num_workers: 0
 
 classes:
-  # Соответствие category из JSON -> числовой class_id
-
-  'traffic light': 0
-  'traffic sign': 1
-  'car': 2
-  'area/drivable': 3
-  'lane/road curb': 4
-  'person': 5
-  'area/alternative': 6
-  'lane/single white': 7
-  'lane/double yellow': 8
-  'bus': 9
-  'truck': 10
-  'lane/single yellow': 11
-  'lane/crosswalk': 12
-  'rider': 13
-  'bike': 14
-  'lane/double white': 15
-  'motor': 16
-  'train': 17
-  'lane/single other': 18
-  'lane/double other': 19
+  traffic light: 0
+  traffic sign: 1
+  car: 2
+  person: 3
+  bus: 4
+  truck: 5
+  rider: 6
+  bike: 7
+  motor: 8
+  train: 9
