@@ -108,11 +108,17 @@ class RFDetrImageExperiment:
             name: _loader_manifest(loader)
             for name, loader in sorted(self.components.dataloaders.items())
         }
+        class_balance = {
+            name: summary
+            for name, loader in sorted(self.components.dataloaders.items())
+            if (summary := getattr(loader, "class_balance_summary", None)) is not None
+        }
         canonical = json.dumps(splits, ensure_ascii=False, sort_keys=True)
         payload = {
             "seed": self.config.train.seed,
             "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
             "counts": {name: len(samples) for name, samples in splits.items()},
+            "class_balance": class_balance,
             "splits": splits,
         }
         manifest_path = self.experiment.root / "logs" / "dataset-splits.json"
@@ -123,8 +129,20 @@ class RFDetrImageExperiment:
         self.experiment.save_artifact("dataset-splits", manifest_path)
         self.experiment.record_metadata(
             "dataset_splits",
-            {"sha256": payload["sha256"], "counts": payload["counts"]},
+            {
+                "sha256": payload["sha256"],
+                "counts": payload["counts"],
+                "class_balance": class_balance,
+            },
         )
+        train_balance = class_balance.get("train")
+        if train_balance is not None:
+            self.experiment.log_message(
+                "class balance enabled: "
+                f"sampling={train_balance['sampling']}, "
+                f"replacement={train_balance['replacement']}, "
+                f"sample_weight_range={train_balance['sample_weight_range']}"
+            )
 
     def _publish_checkpoints(self) -> None:
         """Apply retention to periodic checkpoints and publish retained files."""

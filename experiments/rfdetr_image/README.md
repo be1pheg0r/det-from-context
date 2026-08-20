@@ -17,6 +17,11 @@ optimizer, scheduler, AMP, EMA, COCO-метрики или checkpoint callbacks.
 test добавляется, только если `test_fraction > 0`. Validation и test используют
 детерминированные transforms без train-аугментаций.
 
+Для generated-режима включена multilabel-стратификация. Train использует
+class-aware `inverse_sqrt` sampling с ограничением веса 5.0; validation/test не
+ресэмплируются. Это компенсирует редкие классы, сохраняя официальный RF-DETR
+IoU-aware BCE criterion без локального fork loss-функции.
+
 Каждый запуск сохраняет:
 
 - полный console/file log и JSONL скаляров;

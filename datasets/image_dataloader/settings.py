@@ -106,6 +106,14 @@ class DataLoaderSettings(_Settings):
     return_targets: bool = True
 
 
+class ClassBalanceSettings(_Settings):
+    """Control multilabel split stratification and train-only resampling."""
+
+    stratify_generated: bool = False
+    sampling: Literal["none", "inverse_sqrt", "inverse_frequency"] = "none"
+    max_sample_weight: float = Field(5.0, ge=1.0)
+
+
 class ImageDataLoaderSettings(_Settings):
     """Complete self-contained component configuration."""
 
@@ -113,6 +121,7 @@ class ImageDataLoaderSettings(_Settings):
     dataset: DatasetSettings
     splits: SplitSettings = Field(default_factory=SplitSettings)
     dataloader: DataLoaderSettings = Field(default_factory=DataLoaderSettings)
+    class_balance: ClassBalanceSettings = Field(default_factory=ClassBalanceSettings)
     classes: dict[str, int] = Field(min_length=1)
 
     @model_validator(mode="after")

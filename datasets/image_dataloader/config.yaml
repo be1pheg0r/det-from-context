@@ -45,6 +45,13 @@ splits:
   validation_dir: val
   test_dir: test
 
+# Preserve multilabel class presence across generated splits and compensate the
+# train long tail without changing RF-DETR's official matcher or criterion.
+class_balance:
+  stratify_generated: true
+  sampling: inverse_sqrt
+  max_sample_weight: 5.0
+
 dataloader:
   batch_size: 1
   shuffle: true

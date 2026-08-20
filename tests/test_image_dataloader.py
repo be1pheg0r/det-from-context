@@ -12,7 +12,7 @@ import torch
 from omegaconf import OmegaConf
 from PIL import Image
 from torch import Tensor
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, WeightedRandomSampler
 
 from context_detection.config import ExperimentConfig
 from context_detection.data.protocols import DatasetSplit
@@ -34,6 +34,8 @@ def _settings(
     split_mode: str = "generated",
     test_fraction: float = 0.0,
     strict_pairs: bool = True,
+    stratify_generated: bool = False,
+    sampling: str = "none",
 ) -> ImageDataLoaderSettings:
     """Build a compact valid component config for tests."""
     validation_fraction = 0.2 if test_fraction == 0.0 else 0.2
@@ -57,6 +59,11 @@ def _settings(
                 "test_fraction": test_fraction,
             },
             "dataloader": {"batch_size": 1, "num_workers": 0},
+            "class_balance": {
+                "stratify_generated": stratify_generated,
+                "sampling": sampling,
+                "max_sample_weight": 5.0,
+            },
             "classes": {"car": 0, "person": 1},
         }
     )
@@ -143,6 +150,7 @@ def test_dataset_pairs_sorted_files_and_validates_transformed_targets(
     assert target["boxes"].shape == (1, 4)
     assert target["boxes"].min() >= 0 and target["boxes"].max() <= 1
     assert target["rejected_objects"].item() == 0
+    assert dataset.labels_by_image() == [(0,), (0,)]
 
 
 def test_dataset_strict_pair_validation_reports_missing_and_orphan_files(
@@ -214,6 +222,131 @@ def test_generated_test_split_with_zero_fraction_fails_explicitly(
 
     with pytest.raises(ValueError, match="zero configured fraction"):
         ImageDataLoaderProtocol._split_indices(settings, 10, DatasetSplit.TEST, seed=0)
+
+
+def test_generated_multilabel_splits_are_stratified_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(
+        tmp_path / "images",
+        tmp_path / "annotations",
+        test_fraction=0.2,
+        stratify_generated=True,
+    )
+    labels_by_image = [
+        tuple(
+            label
+            for label, present in (
+                (0, index < 35),
+                (1, index % 5 == 0),
+                (2, index < 5),
+            )
+            if present
+        )
+        for index in range(50)
+    ]
+
+    partitions = {
+        split: ImageDataLoaderProtocol._split_indices(
+            settings,
+            len(labels_by_image),
+            split,
+            seed=17,
+            labels_by_image=labels_by_image,
+        )
+        for split in DatasetSplit
+    }
+    repeated = {
+        split: ImageDataLoaderProtocol._split_indices(
+            settings,
+            len(labels_by_image),
+            split,
+            seed=17,
+            labels_by_image=labels_by_image,
+        )
+        for split in DatasetSplit
+    }
+
+    assert partitions == repeated
+    assert [len(partitions[split]) for split in DatasetSplit] == [30, 10, 10]
+    expected_presence = {
+        0: [21, 7, 7],
+        1: [6, 2, 2],
+        2: [3, 1, 1],
+    }
+    for class_id, expected in expected_presence.items():
+        actual = [
+            sum(class_id in labels_by_image[index] for index in partitions[split])
+            for split in DatasetSplit
+        ]
+        assert actual == expected
+
+
+def test_inverse_sqrt_sampling_upweights_rare_class_images() -> None:
+    labels_by_image = [(0,)] * 8 + [(1,)] * 2 + [(0, 1)]
+
+    weights, class_weights = ImageDataLoaderProtocol._sample_weights(
+        labels_by_image,
+        num_classes=2,
+        strategy="inverse_sqrt",
+        max_weight=5.0,
+    )
+
+    assert class_weights[0] == 1.0
+    assert class_weights[1] == pytest.approx((9 / 3) ** 0.5)
+    assert weights[:8] == [1.0] * 8
+    assert weights[8:] == [pytest.approx((9 / 3) ** 0.5)] * 3
+
+
+def test_train_loader_uses_class_aware_sampler_and_exposes_statistics(
+    tmp_path: Path,
+) -> None:
+    for index in range(10):
+        category = "car" if index < 8 else "person"
+        _write_pair(
+            tmp_path,
+            f"frame-{index:02d}",
+            [
+                {
+                    "category": category,
+                    "box2d": {"x1": 1, "y1": 1, "x2": 10, "y2": 8},
+                }
+            ],
+        )
+    settings = _settings(
+        tmp_path / "images",
+        tmp_path / "annotations",
+        stratify_generated=True,
+        sampling="inverse_sqrt",
+    )
+    config_path = tmp_path / "dataset.yaml"
+    OmegaConf.save(settings.model_dump(mode="json"), config_path)
+    experiment = ExperimentConfig.model_validate(
+        {
+            "data": {
+                "name": "image_dataloader",
+                "component_path": str(_COMPONENT_ROOT),
+                "config_path": str(config_path),
+                "context_k": 0,
+                "context_strategy": "empty",
+                "clip_len": 1,
+                "image_size": 32,
+            },
+            "train": {"batch_size": 2, "num_workers": 0, "seed": 11},
+            "validation": {"batch_size": 2},
+        }
+    )
+
+    loader = ImageDataLoaderProtocol().build(experiment, DatasetSplit.TRAIN)
+    summary = loader.class_balance_summary  # type: ignore[attr-defined]
+
+    assert isinstance(loader.sampler, WeightedRandomSampler)
+    assert summary["sampling"] == "inverse_sqrt"
+    assert summary["replacement"] is True
+    assert (
+        summary["classes"]["person"]["sampling_weight"]
+        > summary["classes"]["car"]["sampling_weight"]
+    )
 
 
 def test_predefined_mode_selects_independent_train_val_and_test_directories(

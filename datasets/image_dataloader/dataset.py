@@ -59,6 +59,7 @@ class ImageDetectionDataset(Dataset[tuple[Tensor, dict[str, Tensor]]]):
             gpu_postprocess=False,
         )
         self.samples = self._build_samples()
+        self._labels_cache: dict[int, tuple[int, ...]] = {}
 
     @staticmethod
     def _normalize_image_set(value: str) -> str:
@@ -161,6 +162,25 @@ class ImageDetectionDataset(Dataset[tuple[Tensor, dict[str, Tensor]]]):
         image_tensor, transformed = self.transform(image, target)
         self._validate_transformed_target(image_tensor, transformed)
         return image_tensor, transformed
+
+    def labels_by_image(self) -> list[tuple[int, ...]]:
+        """Return raw object labels per image for splitting and train sampling."""
+        return [self._labels_for_index(index) for index in range(len(self))]
+
+    def _labels_for_index(self, index: int) -> tuple[int, ...]:
+        """Read and cache only labels, avoiding transformed image materialization."""
+        cached = self._labels_cache.get(index)
+        if cached is not None:
+            return cached
+        sample = self.samples[index]
+        with Image.open(sample["image"]) as source:
+            image_size = source.size
+        annotation = self.reader.read(
+            sample["annotation"], self.settings.classes, image_size
+        )
+        labels = tuple(annotation.labels)
+        self._labels_cache[index] = labels
+        return labels
 
     def manifest(self) -> list[dict[str, str]]:
         """Return stable paths suitable for split provenance artifacts."""
