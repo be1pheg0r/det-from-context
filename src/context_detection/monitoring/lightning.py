@@ -29,6 +29,7 @@ from .detection import (
 from .tracking import (
     render_association_heatmap,
     render_memory_diagnostics,
+    render_tracking_gif,
     render_tracking_grid,
 )
 
@@ -516,6 +517,14 @@ class MeMOTMonitoringCallback(RFDetrMonitoringCallback):
         if trainer.sanity_checking:
             return
         epoch = int(trainer.current_epoch) + 1
+        if self._tracking_predictions:
+            path = (
+                self.run.root
+                / "logs"
+                / "diagnostics"
+                / f"epoch-{epoch:03d}-tracking-predictions.gif"
+            )
+            self._publish_tracking_gif(epoch, path)
         if epoch % self.visualize_every_n_epochs and epoch != trainer.max_epochs:
             return
         directory = self.run.root / "logs" / "diagnostics"
@@ -558,6 +567,27 @@ class MeMOTMonitoringCallback(RFDetrMonitoringCallback):
         for name, description, renderer in renderers:
             path = directory / f"epoch-{epoch:03d}-{name}.png"
             self._publish_figure(name, description, epoch, path, renderer)
+
+    def _publish_tracking_gif(self, epoch: int, path: Path) -> None:
+        """Render and publish a prediction animation after every validation epoch."""
+        try:
+            render_tracking_gif(
+                self._tracking_images,
+                self._tracking_predictions,
+                self.class_names,
+                path,
+                max_frames=self.max_visual_images,
+            )
+            self.run.log_media(
+                "MeMOT prediction animations", "validation sequence", epoch, path
+            )
+            self.run.save_artifact(path.name, path)
+            self.run.log_message(f"published prediction GIF: {path.name}")
+        except Exception as error:
+            self.run.log_message(
+                f"prediction GIF failed: {type(error).__name__}: {error}",
+                level=logging.WARNING,
+            )
 
 
 def _metric_parts(name: str) -> tuple[str, str]:

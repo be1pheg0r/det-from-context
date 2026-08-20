@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
+from PIL import Image
 from torch import Tensor
 
 
@@ -53,6 +54,53 @@ def render_tracking_grid(
     figure.suptitle("MeMOT identities: GT dashed, predictions solid")
     figure.tight_layout()
     _save(figure, path)
+
+
+def render_tracking_gif(
+    images: Sequence[Tensor],
+    predictions: Sequence[Mapping[str, Any]],
+    class_names: Sequence[str],
+    path: Path,
+    *,
+    max_frames: int,
+    duration_ms: int = 500,
+) -> None:
+    """Render one validation sequence with predicted identities as an animated GIF."""
+    records = list(zip(images, predictions, strict=False))
+    if records and predictions[0].get("sequence_id") is not None:
+        sequence_id = predictions[0]["sequence_id"]
+        records = [
+            record for record in records if record[1].get("sequence_id") == sequence_id
+        ]
+    records = records[:max_frames]
+    if not records:
+        raise ValueError("tracking GIF requires at least one frame")
+
+    frames: list[Image.Image] = []
+    for image, prediction in records:
+        figure, axis = plt.subplots(figsize=(8, 5))
+        displayed = _denormalize_image(image)
+        height, width = displayed.shape[:2]
+        axis.imshow(displayed)
+        _draw_records(axis, prediction, width, height, class_names, ground_truth=False)
+        axis.set_title(
+            f"{prediction.get('sequence_id', 'sequence')} / "
+            f"frame {prediction.get('frame_id', '?')}"
+        )
+        axis.set_axis_off()
+        figure.tight_layout()
+        figure.canvas.draw()
+        frames.append(Image.fromarray(np.asarray(figure.canvas.buffer_rgba()).copy()))
+        plt.close(figure)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames[0].save(
+        path,
+        save_all=True,
+        append_images=frames[1:],
+        duration=duration_ms,
+        loop=0,
+    )
 
 
 def render_association_heatmap(

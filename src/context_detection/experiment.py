@@ -79,6 +79,10 @@ class ExperimentTracker(ABC):
         """Передать изображение в мониторинг запуска."""
 
     @abstractmethod
+    def log_media(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать анимированный или иной media-файл в мониторинг запуска."""
+
+    @abstractmethod
     def complete(self) -> None:
         """Отметить запуск успешно завершённым."""
 
@@ -102,6 +106,9 @@ class LocalTracker(ExperimentTracker):
 
     def log_image(self, title: str, series: str, step: int, path: Path) -> None:
         """Не дублировать локальное изображение."""
+
+    def log_media(self, title: str, series: str, step: int, path: Path) -> None:
+        """Не дублировать локальный media-файл."""
 
     def complete(self) -> None:
         """Локальный статус обновляет сам запуск."""
@@ -168,6 +175,16 @@ class ClearMLTracker(ExperimentTracker):
             iteration=step,
             local_path=str(path),
             max_image_history=-1,
+        )
+
+    def log_media(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать анимацию в ClearML Debug Samples как media."""
+        self._logger.report_media(
+            title=title,
+            series=series,
+            iteration=step,
+            local_path=str(path),
+            max_history=-1,
         )
 
     def complete(self) -> None:
@@ -308,6 +325,13 @@ class ExperimentRun:
         if not source.is_file():
             raise FileNotFoundError(source)
         self.tracker.log_image(title, series, step, source)
+
+    def log_media(self, title: str, series: str, step: int, path: str | Path) -> None:
+        """Передать media-файл tracker-у после проверки локального файла."""
+        source: Path = Path(path).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        self.tracker.log_media(title, series, step, source)
 
     def complete(self, summary: Mapping[str, Any] | None = None) -> None:
         """Зафиксировать итог и успешно закрыть запуск."""

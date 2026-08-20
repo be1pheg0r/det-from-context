@@ -9,6 +9,7 @@ from .lightning import (
 from .tracking import (
     render_association_heatmap,
     render_memory_diagnostics,
+    render_tracking_gif,
     render_tracking_grid,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "RFDetrMonitoringCallback",
     "render_association_heatmap",
     "render_memory_diagnostics",
+    "render_tracking_gif",
     "render_tracking_grid",
 ]

@@ -35,3 +35,5 @@ python experiments/rfdetr_memot/run.py
 прогревают память, а tracking-метрики сохраняются как `available: false` с
 причиной. Эксперимент публикует checkpoints, split manifest, detection-графики,
 ID overlays, association heatmap, memory lifecycle и `tracking-metrics.json`.
+После каждой validation-эпохи GIF с предсказанными track ID сохраняется локально
+и публикуется в ClearML как media в `MeMOT prediction animations`.
