@@ -37,18 +37,18 @@ def count_matching_files(videos_dir, annotations_dir):
     print("=" * 60)
     print("📊 ПОДСЧЕТ ФАЙЛОВ С ОБЩИМИ ИМЕНАМИ")
     print("=" * 60)
-    print(f"\n📁 Директория с видео:")
+    print("\n📁 Директория с видео:")
     print(f"   {videos_dir}")
     print(f"   Всего видеофайлов: {len(video_names)}")
 
-    print(f"\n📁 Директория с аннотациями:")
+    print("\n📁 Директория с аннотациями:")
     print(f"   {annotations_dir}")
     print(f"   Всего файлов аннотаций: {len(annotation_names)}")
 
     print(f"\n✅ Найдено файлов с общими именами: {len(common_names)}")
 
     if len(common_names) > 0 and len(common_names) <= 20:
-        print(f"\n📋 Примеры общих имен:")
+        print("\n📋 Примеры общих имен:")
         for i, name in enumerate(sorted(common_names)[:20], 1):
             print(f"   {i}. {name}")
     elif len(common_names) > 20:
@@ -67,7 +67,8 @@ def count_matching_files(videos_dir, annotations_dir):
 
 if __name__ == '__main__':
     # Пути к директориям
-    videos_dir = "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bdd100k/videos/100k/train"
+    videos_dir = "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bd" \
+        "d100k/videos/100k/train"
     annotations_dir = "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/100k/train"
 
     # Запускаем подсчет

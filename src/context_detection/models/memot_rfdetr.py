@@ -182,7 +182,8 @@ class RFDETRMeMOT(nn.Module):
         self.register_buffer("_dummy", torch.empty(0), persistent=False)
 
     # ------------------------ state helpers ------------------------
-    def init_state(self, batch_size: int, device: torch.device | str) -> MeMOTRuntimeState:
+    def init_state(self, batch_size: int, device: torch.device | str) \
+    -> MeMOTRuntimeState:
         memory = MeMOTState.create(
             batch_size=batch_size,
             num_slots=self.memory.num_slots,
@@ -209,7 +210,9 @@ class RFDETRMeMOT(nn.Module):
         valid = state.memory.valid
         # [B,S,D] -> kept as fixed S slots. Inactive slots are zero and are masked
         # out before concatenation by per-batch slicing in forward.
-        base = state.memory.feature.to(dtype=self._dummy.dtype if self._dummy.numel() else torch.float32)
+        base = state.memory.feature.to(
+            dtype=self._dummy.dtype if self._dummy.numel() else torch.float32
+        )
         base = base.to(device=state.memory.feature.device)
         return self.query_norm(base), valid
 
@@ -401,7 +404,8 @@ class RFDETRMeMOT(nn.Module):
                 track_ids=track_ids,
                 track_slot_indices=torch.nn.utils.rnn.pad_sequence(
                     slot_lists, batch_first=True, padding_value=-1
-                ) if slot_lists else torch.empty((b, 0), dtype=torch.long, device=device),
+                ) if slot_lists \ 
+                else torch.empty((b, 0), dtype=torch.long, device=device),
                 proposal_queries=proposal_q,
                 track_queries=track_q,
             ),
@@ -431,7 +435,9 @@ class RFDETRMeMOT(nn.Module):
         gt_boxes = target["boxes"].to(output.proposal_boxes.device)
         gt_labels = target.get("labels")
         if gt_labels is None:
-            gt_labels = torch.zeros(gt_boxes.shape[0], dtype=torch.long, device=gt_boxes.device)
+            gt_labels = torch.zeros(
+                gt_boxes.shape[0], dtype=torch.long, device=gt_boxes.device
+            )
         else:
             gt_labels = gt_labels.to(gt_boxes.device)
         gt_ids = target.get("instance_ids")
@@ -536,11 +542,12 @@ class RFDETRMeMOT(nn.Module):
         if gt_boxes.numel() == 0:
             return obj, uni, boxes, pred_boxes.new_zeros(0, dtype=torch.long)
 
-        cost = torch.cdist(pred_boxes, gt_boxes, p=1) - _pairwise_iou(pred_boxes, gt_boxes)
+        cost = torch.cdist(pred_boxes, gt_boxes, p=1) - \ 
+            _pairwise_iou(pred_boxes, gt_boxes)
         row, col = _hungarian(cost)
         obj[row] = 1.0
         boxes[row] = gt_boxes[col]
-        for r, c in zip(row.tolist(), col.tolist(), , strict=False):
+        for r, c in zip(row.tolist(), col.tolist(), strict=False):
             # u=1 only for a genuinely new object; if this instance has already
             # appeared earlier in the clip, the proposal must be suppressed.
             uni[r] = 0.0 if int(gt_ids[c]) in seen_ids else 1.0
@@ -642,8 +649,8 @@ class MeMOTClipTrainer:
             if state is None:
                 state = self.model.init_state(1, batch.images.device)
                 seen_by_batch = [set()]
-            elif batch.is_sequence_start is not None 
-                \ and bool(batch.is_sequence_start[0]):
+            elif (batch.is_sequence_start is not None 
+                  and bool(batch.is_sequence_start[0])):
                 state = state.reset(batch.is_sequence_start)
                 seen_by_batch = [set()]
 

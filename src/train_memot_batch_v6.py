@@ -681,5 +681,8 @@ def train(args: argparse.Namespace) -> None:
         print(f"Checkpoint saved: {args.save}")
 
 
+def unused_function():
+    print(rfdetr.sys)
+
 if __name__ == "__main__":
     train(parse_args())
