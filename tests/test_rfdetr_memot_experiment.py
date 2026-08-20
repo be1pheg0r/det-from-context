@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from experiments.rfdetr_memot.submit_datasphere import _load_paths
+from experiments.rfdetr_memot.worker import _disable_coco_ema_forward_for_clips
 from omegaconf import OmegaConf
+from rfdetr.training import COCOEvalCallback
 
 from context_detection.config import load_config
 
@@ -28,6 +31,16 @@ def test_experiment_config_matches_video_classes_and_external_memot() -> None:
     assert config.data.splits == ["train", "validation"]
     assert config.logging.max_visual_images == 6
     assert config.logging.max_diagnostic_images == 256
+
+
+def test_clip_experiment_disables_only_coco_ema_forward() -> None:
+    callback = object.__new__(COCOEvalCallback)
+    trainer = SimpleNamespace(callbacks=[callback, object()])
+
+    changed = _disable_coco_ema_forward_for_clips(trainer)  # type: ignore[arg-type]
+
+    assert changed == 1
+    assert callback._get_ema_callback(trainer) is None
 
 
 def test_datasphere_paths_and_template_use_independent_video_roots() -> None:

@@ -7,7 +7,7 @@ from typing import Any
 
 from experiments.rfdetr_image.worker import RFDetrImageExperiment
 from pytorch_lightning import Trainer
-from rfdetr.training import build_trainer
+from rfdetr.training import COCOEvalCallback, build_trainer
 
 from context_detection.config import ExperimentConfig
 from context_detection.experiment import ExperimentComponents, ExperimentRun
@@ -72,6 +72,13 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
             accelerator=train_config.accelerator,
             logger=logger,
         )
+        disabled_ema_callbacks = _disable_coco_ema_forward_for_clips(trainer)
+        if disabled_ema_callbacks:
+            self.experiment.log_message(
+                "disabled detector-only EMA validation forward in "
+                f"{disabled_ema_callbacks} COCO callback(s); "
+                "EMA weight updates remain enabled"
+            )
         trainer.callbacks.append(
             MeMOTMonitoringCallback(
                 self.experiment,
@@ -122,6 +129,16 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
         summary["tracking"] = module.validation_tracking_result
         self.experiment.log_message("worker 7/7 complete: outputs published")
         return summary
+
+
+def _disable_coco_ema_forward_for_clips(trainer: Trainer) -> int:
+    """Keep EMA updates but prevent tuple-only detector validation on clip batches."""
+    count = 0
+    for callback in trainer.callbacks:
+        if isinstance(callback, COCOEvalCallback):
+            callback._get_ema_callback = lambda _trainer: None  # type: ignore[method-assign]
+            count += 1
+    return count
 
 
 def run_rfdetr_memot(
