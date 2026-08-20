@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
 from context_detection.config import ExperimentConfig
 from context_detection.data.collate import DetectionCollator
 from context_detection.data.protocols import DatasetSplit
+from context_detection.models.rfdetr import rfdetr_pretrained_resolution
 
 _COMPONENT_ROOT = Path(__file__).resolve().parent
 if str(_COMPONENT_ROOT) not in sys.path:
@@ -64,7 +65,16 @@ class ImageDataLoaderProtocol:
     def build(self, config: ExperimentConfig, split: DatasetSplit) -> DataLoader[Any]:
         """Build one project-standard DataLoader endpoint."""
         settings = self._load_settings(Path(config.data.config_path))
-        self._set_experiment_resolution(settings, config.data.image_size)
+        if "image_size" in config.data.model_fields_set:
+            raise ValueError(
+                "data.image_size must not be set for RF-DETR; the pretrained variant "
+                "owns its input resolution"
+            )
+        variant = config.detector.variant
+        if config.detector.name != "rfdetr" or variant is None:
+            raise ValueError("image_dataloader requires an RF-DETR pretrained variant")
+        resolution = rfdetr_pretrained_resolution(variant)
+        self._validate_resolution(settings, resolution)
         component_root = Path(config.data.config_path).parent
         images_root, annotations_root = self._resolved_roots(settings, component_root)
         image_set = {
@@ -80,6 +90,7 @@ class ImageDataLoaderProtocol:
                 images_root / child,
                 annotations_root / child,
                 settings,
+                resolution=resolution,
                 image_set=image_set,
             )
         else:
@@ -87,6 +98,7 @@ class ImageDataLoaderProtocol:
                 images_root,
                 annotations_root,
                 settings,
+                resolution=resolution,
                 image_set=image_set,
             )
             labels_for_split = (
@@ -181,18 +193,16 @@ class ImageDataLoaderProtocol:
         return ImageDataLoaderSettings.model_validate(raw)
 
     @staticmethod
-    def _set_experiment_resolution(
+    def _validate_resolution(
         settings: ImageDataLoaderSettings, resolution: int
     ) -> None:
-        """Apply the experiment-owned resolution after checking RF-DETR divisibility."""
+        """Check that the variant-owned resolution matches preprocessing geometry."""
         block_size = settings.dataset.patch_size * settings.dataset.num_windows
         if resolution % block_size:
             raise ValueError(
                 "RF-DETR image_size must be divisible by patch_size * num_windows "
                 f"({block_size}), got {resolution}"
             )
-        settings.dataset.image_size.width = resolution
-        settings.dataset.image_size.height = resolution
 
     @staticmethod
     def _resolved_roots(

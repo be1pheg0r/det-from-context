@@ -48,8 +48,6 @@ model:
   # Дополнительные register queries decoder, не являющиеся detections.
   num_decoder_registers: 0
 
-  # Квадратное входное разрешение; кратно patch_size * num_windows.
-  resolution: 512
   # Сторона positional-encoding grid в patch tokens.
   positional_encoding_size: 32
   # Число каналов входного изображения.

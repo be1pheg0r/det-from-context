@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from importlib import import_module
 from types import ModuleType
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from rfdetr.utilities import box_ops
 from torch import Tensor, nn
@@ -28,6 +28,21 @@ class RFDetrVariant(StrEnum):
     def upstream_class_name(self) -> str:
         """Имя публичного класса варианта в пакете :mod:`rfdetr`."""
         return f"RFDETR{self.value.title()}"
+
+
+# Official input sizes of the released RF-DETR detection checkpoints.
+RFDETR_PRETRAINED_RESOLUTIONS: Final[dict[RFDetrVariant, int]] = {
+    RFDetrVariant.NANO: 384,
+    RFDetrVariant.SMALL: 512,
+    RFDetrVariant.MEDIUM: 576,
+    RFDetrVariant.LARGE: 704,
+}
+
+
+def rfdetr_pretrained_resolution(variant: str | RFDetrVariant) -> int:
+    """Return the fixed input resolution for an official pretrained variant."""
+    parsed = variant if isinstance(variant, RFDetrVariant) else _parse_variant(variant)
+    return RFDETR_PRETRAINED_RESOLUTIONS[parsed]
 
 
 class _RFDetrForwardCapture:
@@ -128,6 +143,7 @@ class RFDetrAdapter(DetectorAdapter):
     ) -> None:
         super().__init__()
         self.variant: RFDetrVariant = _parse_variant(variant)
+        self.input_resolution: int = rfdetr_pretrained_resolution(self.variant)
         upstream: object = self._build_upstream(weights, model_options)
         model_context: object = getattr(upstream, "model", None)
         model: object = getattr(model_context, "model", None)
@@ -260,6 +276,12 @@ class RFDetrAdapter(DetectorAdapter):
             )
         factory: Callable[..., object] = cast("Callable[..., object]", provider)
         options: dict[str, Any] = dict(model_options or {})
+        if "resolution" in options:
+            raise ValueError(
+                "RF-DETR resolution is fixed by the pretrained variant and must not "
+                "be set in model options"
+            )
+        options["resolution"] = self.input_resolution
         if weights is not None:
             configured_weights: object = options.get("pretrain_weights")
             if configured_weights is not None and configured_weights != weights:

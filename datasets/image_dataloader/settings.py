@@ -13,13 +13,6 @@ class _Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ImageSizeSettings(_Settings):
-    """Square model input resolution before the experiment overrides it."""
-
-    width: int = Field(gt=0)
-    height: int = Field(gt=0)
-
-
 class DatasetSettings(_Settings):
     """Locations, annotation reader, and RF-DETR preprocessing controls."""
 
@@ -27,7 +20,6 @@ class DatasetSettings(_Settings):
     annotations_dir: str = Field(min_length=1)
     annotation_format: str = Field("bdd100k_json", min_length=1)
     annotation_extension: str = Field(".json", pattern=r"^\.[^.]+$")
-    image_size: ImageSizeSettings
     patch_size: int = Field(16, gt=0)
     num_windows: int = Field(2, gt=0)
     multi_scale: bool = False

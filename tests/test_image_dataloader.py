@@ -46,7 +46,6 @@ def _settings(
                 "images_dir": str(images_dir),
                 "annotations_dir": str(annotations_dir),
                 "annotation_format": "bdd100k_json",
-                "image_size": {"width": 32, "height": 32},
                 "patch_size": 16,
                 "num_windows": 2,
                 "image_extensions": [".png"],
@@ -140,6 +139,7 @@ def test_dataset_pairs_sorted_files_and_validates_transformed_targets(
         tmp_path / "images",
         tmp_path / "annotations",
         settings,
+        resolution=32,
         image_set="train",
         transform=_normalize_transform,
     )
@@ -168,6 +168,7 @@ def test_dataset_strict_pair_validation_reports_missing_and_orphan_files(
             images,
             annotations,
             settings,
+            resolution=32,
             image_set="val",
             transform=_normalize_transform,
         )
@@ -179,6 +180,7 @@ def test_dataset_strict_pair_validation_reports_missing_and_orphan_files(
             images,
             annotations,
             settings,
+            resolution=32,
             image_set="val",
             transform=_normalize_transform,
         )
@@ -330,8 +332,8 @@ def test_train_loader_uses_class_aware_sampler_and_exposes_statistics(
                 "context_k": 0,
                 "context_strategy": "empty",
                 "clip_len": 1,
-                "image_size": 32,
             },
+            "detector": {"name": "rfdetr", "variant": "nano"},
             "train": {"batch_size": 2, "num_workers": 0, "seed": 11},
             "validation": {"batch_size": 2},
         }
@@ -347,6 +349,31 @@ def test_train_loader_uses_class_aware_sampler_and_exposes_statistics(
         summary["classes"]["person"]["sampling_weight"]
         > summary["classes"]["car"]["sampling_weight"]
     )
+
+
+def test_rfdetr_image_size_cannot_be_overridden_in_experiment_config(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path / "images", tmp_path / "annotations")
+    config_path = tmp_path / "dataset.yaml"
+    OmegaConf.save(settings.model_dump(mode="json"), config_path)
+    experiment = ExperimentConfig.model_validate(
+        {
+            "data": {
+                "name": "image_dataloader",
+                "component_path": str(_COMPONENT_ROOT),
+                "config_path": str(config_path),
+                "context_k": 0,
+                "context_strategy": "empty",
+                "clip_len": 1,
+                "image_size": 640,
+            },
+            "detector": {"name": "rfdetr", "variant": "small"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="must not be set for RF-DETR"):
+        ImageDataLoaderProtocol().build(experiment, DatasetSplit.TRAIN)
 
 
 def test_predefined_mode_selects_independent_train_val_and_test_directories(
@@ -369,8 +396,8 @@ def test_predefined_mode_selects_independent_train_val_and_test_directories(
                 "context_k": 0,
                 "context_strategy": "empty",
                 "clip_len": 1,
-                "image_size": 32,
             },
+            "detector": {"name": "rfdetr", "variant": "nano"},
             "train": {"batch_size": 1, "num_workers": 0},
             "validation": {"batch_size": 1},
         }
@@ -384,9 +411,10 @@ def test_predefined_mode_selects_independent_train_val_and_test_directories(
             annotations_dir: Path,
             component_settings: ImageDataLoaderSettings,
             *,
+            resolution: int,
             image_set: str,
         ) -> None:
-            del component_settings
+            del component_settings, resolution
             calls.append((Path(images_dir), Path(annotations_dir), image_set))
 
         def __len__(self) -> int:

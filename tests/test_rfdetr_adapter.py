@@ -15,7 +15,11 @@ from context_detection.build import build_model
 from context_detection.config import ExperimentConfig
 from context_detection.contracts import ContextBatch, DetectionBatch
 from context_detection.models import rfdetr as rfdetr_module
-from context_detection.models.rfdetr import RFDetrAdapter
+from context_detection.models.rfdetr import (
+    RFDETR_PRETRAINED_RESOLUTIONS,
+    RFDetrAdapter,
+    RFDetrVariant,
+)
 
 
 class _Feature:
@@ -119,7 +123,11 @@ class _Provider:
 
     def __init__(self, **kwargs: object) -> None:
         type(self).last_kwargs = kwargs
-        self.model_config = SimpleNamespace(hidden_dim=4, num_queries=3)
+        self.model_config = SimpleNamespace(
+            hidden_dim=4,
+            num_queries=3,
+            resolution=kwargs["resolution"],
+        )
         self.model = SimpleNamespace(model=_UpstreamModel())
 
 
@@ -216,9 +224,27 @@ def test_adapter_validates_variant_and_forwards_weight_path(
     adapter = RFDetrAdapter("rfdetr-large", weights="checkpoint.pth")
 
     assert adapter.variant.value == "large"
-    assert _Provider.last_kwargs == {"pretrain_weights": "checkpoint.pth"}
+    assert _Provider.last_kwargs == {
+        "pretrain_weights": "checkpoint.pth",
+        "resolution": 704,
+    }
     with pytest.raises(ValueError, match="неизвестный RF-DETR variant"):
         RFDetrAdapter("base")
+
+
+def test_pretrained_variants_own_their_official_input_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_rfdetr(monkeypatch)
+
+    assert RFDETR_PRETRAINED_RESOLUTIONS == {
+        RFDetrVariant.NANO: 384,
+        RFDetrVariant.SMALL: 512,
+        RFDetrVariant.MEDIUM: 576,
+        RFDetrVariant.LARGE: 704,
+    }
+    with pytest.raises(ValueError, match="resolution is fixed"):
+        RFDetrAdapter("small", model_options={"resolution": 640})
 
 
 def test_rfdetr_directory_component_builds_model_protocol(
@@ -275,7 +301,10 @@ def test_component_config_passes_upstream_model_validation() -> None:
     raw: Any = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     assert isinstance(raw, dict)
 
-    upstream_config = upstream_config_module.RFDETRSmallConfig(**raw["model"])
+    upstream_config = upstream_config_module.RFDETRSmallConfig(
+        **raw["model"],
+        resolution=RFDETR_PRETRAINED_RESOLUTIONS[RFDetrVariant(raw["variant"])],
+    )
 
     assert upstream_config.hidden_dim == 256
     assert upstream_config.num_classes == 31

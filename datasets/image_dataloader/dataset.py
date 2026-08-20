@@ -26,6 +26,7 @@ class ImageDetectionDataset(Dataset[tuple[Tensor, dict[str, Tensor]]]):
         annotations_dir: str | Path,
         config: ImageDataLoaderSettings | dict[str, Any],
         *,
+        resolution: int,
         image_set: str | None = None,
         transform: Transform | None = None,
     ) -> None:
@@ -37,9 +38,9 @@ class ImageDetectionDataset(Dataset[tuple[Tensor, dict[str, Tensor]]]):
             else ImageDataLoaderSettings.model_validate(config)
         )
         dataset_config = self.settings.dataset
-        if dataset_config.image_size.width != dataset_config.image_size.height:
-            raise ValueError("RF-DETR preprocessing requires a square image size")
-        self.resolution = dataset_config.image_size.width
+        if resolution <= 0:
+            raise ValueError("RF-DETR resolution must be positive")
+        self.resolution = resolution
         self.image_set = self._normalize_image_set(
             image_set or self._infer_image_set(self.images_dir)
         )

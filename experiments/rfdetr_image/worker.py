@@ -51,10 +51,10 @@ class RFDetrImageExperiment:
                 f"{len(self.class_names)} != {config.detector.num_classes}"
             )
         model_resolution = int(getattr(detector.model_config, "resolution", 0))
-        if model_resolution != config.data.image_size:
+        if model_resolution != detector.input_resolution:
             raise ValueError(
-                "RF-DETR model and dataset resolutions disagree: "
-                f"{model_resolution} != {config.data.image_size}"
+                "RF-DETR model resolution disagrees with its pretrained variant: "
+                f"{model_resolution} != {detector.input_resolution}"
             )
         detector.model_config.amp = config.train.amp
 

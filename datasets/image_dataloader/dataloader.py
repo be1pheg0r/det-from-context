@@ -5,6 +5,8 @@ from dataset import ImageDetectionDataset
 from settings import ImageDataLoaderSettings
 from torch.utils.data import DataLoader
 
+from context_detection.models.rfdetr import rfdetr_pretrained_resolution
+
 
 def detection_collate_fn(batch):
     """
@@ -30,7 +32,9 @@ def detection_collate_fn(batch):
     return images, targets
 
 
-def create_dataloader(config: dict[str, Any], split: str = "train") -> DataLoader[Any]:
+def create_dataloader(
+    config: dict[str, Any], split: str = "train", *, variant: str = "small"
+) -> DataLoader[Any]:
     """Create the backwards-compatible standalone loader for a named split."""
     settings = ImageDataLoaderSettings.model_validate(config)
     split_name = "val" if split in {"validation", "valid"} else split
@@ -38,6 +42,7 @@ def create_dataloader(config: dict[str, Any], split: str = "train") -> DataLoade
         settings.dataset.images_dir,
         settings.dataset.annotations_dir,
         settings,
+        resolution=rfdetr_pretrained_resolution(variant),
         image_set=split_name,
     )
     dataloader_config = settings.dataloader

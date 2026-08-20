@@ -8,12 +8,6 @@ dataset:
   annotation_format: bdd100k_json
   annotation_extension: ".json"
 
-  # Максимальное разрешение изображения.
-  # Если исходное изображение больше, оно будет уменьшено
-  # с сохранением пропорций.
-  image_size:
-    width: 1280
-    height: 720
   patch_size: 16
   num_windows: 2
   multi_scale: false
