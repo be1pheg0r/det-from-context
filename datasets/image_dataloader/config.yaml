@@ -16,7 +16,7 @@ dataset:
   scale_jitter: true
   aug_config: null
   recursive: false
-  strict_pairs: true
+  strict_pairs: false
 
   # Расширения файлов изображений, которые обрабатываем
   image_extensions:

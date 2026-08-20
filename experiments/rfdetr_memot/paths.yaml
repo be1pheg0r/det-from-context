@@ -3,7 +3,7 @@ s3:
   connector_id: bt17f0k57rfieh6jugr8
 
 data:
-  videos_dir: /job/s3/${s3.connector_id}/bdd100k_downloads/VIDEOS_TEST/bdd100k/videos/100k
-  annotations_dir: /job/s3/${s3.connector_id}/out/labels3
+  videos_dir: /job/s3/${s3.connector_id}/bdd100k_downloads
+  annotations_dir: /job/s3/${s3.connector_id}/bdd100k_downloads/labels
 
 output_root: /job/s3/${s3.connector_id}/rfdetr-memot-runs
