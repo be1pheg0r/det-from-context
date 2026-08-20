@@ -10,9 +10,8 @@ dataset:
   split_annotations_dirs:
     train: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}/train
     validation: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}/val
-  max_sequences:
-    train: 32
-    validation: 8
+  # Empty mapping disables smoke-run limits and uses every paired sequence.
+  max_sequences: {}
   annotation_extension: ".json"
   video_extensions: [".mp4", ".mov", ".avi", ".mkv"]
   recursive: true

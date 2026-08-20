@@ -16,7 +16,7 @@ data:
   # Не создавать отдельный ContextBatch из изображений.
   context_strategy: empty
   # Последовательных кадров в одном клипе с общей памятью MeMOT.
-  clip_len: 2
+  clip_len: 8
   # Сплиты, для которых будут построены DataLoader-ы.
   splits: [train, validation]
   # Аугментации, одинаково применяемые ко всем кадрам одного клипа.
@@ -33,7 +33,7 @@ detector:
   # Базовая конфигурация компонента RF-DETR.
   config_path: models/rfdetr/config.yaml
   # Размер предобученной архитектуры RF-DETR.
-  variant: small
+  variant: medium
   # Явный checkpoint; null использует стандартные предобученные веса variant.
   weights: null
   # Не обновлять backbone во время fine-tuning.
@@ -97,10 +97,10 @@ context:
 # Оптимизация модели.
 train:
   # Число полных проходов по train split.
-  epochs: 1
+  epochs: 10
   # Базовый learning rate.
   lr: 0.0001
-  # Число клипов на GPU за один forward/backward.
+  # Число клипов на GPU за один forward/backward; безопасно для V100 32 GB.
   batch_size: 1
   # Число batch-ей, чьи градиенты суммируются перед optimizer step.
   grad_accum: 4
@@ -109,7 +109,7 @@ train:
   # L2/decoupled weight decay для AdamW.
   weight_decay: 0.0001
   # Число эпох линейного прогрева learning rate.
-  warmup_epochs: 0
+  warmup_epochs: 1
   # Множитель LR для detection heads.
   head_lr_multiplier: 1.0
   # Множитель LR для decoder.
