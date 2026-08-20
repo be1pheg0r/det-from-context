@@ -132,6 +132,16 @@ def test_lightning_logger_groups_scalars_and_keeps_metric_history(
     }
 
 
+def test_runtime_logger_skips_amp_overflow_without_stopping(tmp_path: Path) -> None:
+    run = _Run(tmp_path)
+    logger = ExperimentLightningLogger(run)  # type: ignore[arg-type]
+
+    logger.log_runtime({"grad_norm": float("inf"), "batch_seconds": 0.5}, step=42)
+
+    assert run.metrics == [("runtime", 42, {"batch_seconds": 0.5})]
+    assert any("AMP overflow" in message for message in run.messages)
+
+
 def test_detection_diagnostics_render_nonempty_png_artifacts(tmp_path: Path) -> None:
     images, predictions, targets = _records()
     class_names = ["car", "person"]

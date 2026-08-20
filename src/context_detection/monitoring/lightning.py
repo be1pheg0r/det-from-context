@@ -116,11 +116,25 @@ class ExperimentLightningLogger(Logger):
 
     @rank_zero_only
     def log_runtime(self, metrics: Mapping[str, float], step: int) -> None:
-        """Record callback-derived timing, memory, and gradient diagnostics."""
-        normalized = {name: float(value) for name, value in metrics.items()}
+        """Record finite diagnostics without allowing monitoring to stop training."""
+        normalized: dict[str, float] = {}
+        skipped: list[str] = []
+        for name, raw_value in metrics.items():
+            value = _finite_scalar(raw_value)
+            if value is None:
+                skipped.append(name)
+            else:
+                normalized[name] = value
+        if skipped:
+            self.run.log_message(
+                f"AMP overflow/non-finite runtime metrics skipped at step {step}: "
+                f"{', '.join(skipped)}",
+                level=logging.WARNING,
+            )
         for name, value in normalized.items():
             self.history.add(f"runtime/{name}", step, value)
-        self.run.log_metrics(normalized, step=step, split="runtime")
+        if normalized:
+            self.run.log_metrics(normalized, step=step, split="runtime")
 
     def save(self) -> None:
         """All values are persisted eagerly by :class:`ExperimentRun`."""
