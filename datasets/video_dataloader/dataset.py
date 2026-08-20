@@ -213,6 +213,13 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
 
         records: list[VideoRecord] = []
         paired_stems = sorted(set(videos).intersection(annotations))
+        limit = dataset_settings.max_sequences.get(self.split)
+        if limit is not None:
+            paired_stems = paired_stems[:limit]
+            _progress(
+                f"split={self.split}: limiting annotation parsing to "
+                f"{len(paired_stems)} sequences"
+            )
         _progress(
             f"split={self.split}: paired={len(paired_stems)}, missing={len(missing)}, "
             f"orphans={len(orphans)}; parsing JSON annotations"
@@ -244,6 +251,7 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             root.rglob("*") if self.settings.dataset.recursive else root.iterdir()
         )
         selected: list[Path] = []
+        root_is_split = root.name.lower() in self.split_names
         visited = 0
         for path in iterator:
             visited += 1
@@ -255,9 +263,12 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             if (
                 path.is_file()
                 and path.suffix.lower() in extensions
-                and any(
-                    part.lower() in self.split_names
-                    for part in path.relative_to(root).parts
+                and (
+                    root_is_split
+                    or any(
+                        part.lower() in self.split_names
+                        for part in path.relative_to(root).parts
+                    )
                 )
             ):
                 selected.append(path)

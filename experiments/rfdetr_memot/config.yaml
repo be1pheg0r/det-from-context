@@ -6,7 +6,8 @@ data:
   root: null
   context_k: 0
   context_strategy: empty
-  clip_len: 3
+  clip_len: 2
+  splits: [train, validation]
   augmentations:
   - horizontal_flip
   - color_jitter
@@ -29,10 +30,10 @@ detector:
 context:
   name: memot
   fusion: residual
-  num_slots: 128
+  num_slots: 64
   memory_length: 24
   short_memory_length: 3
-  memory_decoder_layers: 2
+  memory_decoder_layers: 1
   write_threshold: 0.35
   max_missed: 12
   association_iou_threshold: 0.1
@@ -45,20 +46,23 @@ context:
   motion: constant_velocity
   horizon: 0
 train:
-  epochs: 12
+  epochs: 1
   lr: 0.0001
   batch_size: 1
-  grad_accum: 8
+  grad_accum: 4
   optimizer: adamw
   weight_decay: 0.0001
-  warmup_epochs: 2
+  warmup_epochs: 0
   head_lr_multiplier: 1.0
   decoder_lr_multiplier: 0.5
   backbone_lr_multiplier: 0.05
-  num_workers: 4
+  num_workers: 6
   seed: 42
   amp: true
-  denoising: true
+  amp_dtype: fp16
+  use_ema: false
+  compute_train_metrics: false
+  denoising: false
   detach_state: true
 validation:
   metrics:
@@ -79,8 +83,8 @@ logging:
 output:
   root: ${oc.env:RFDETR_MEMOT_OUTPUT_ROOT,/job/s3/bt17f0k57rfieh6jugr8/rfdetr-memot-runs}
   checkpoint_every_n_epochs: 1
-  keep_last_checkpoints: 2
-  save_best: true
+  keep_last_checkpoints: 1
+  save_best: false
   monitor: map
 clearml:
   enabled: true

@@ -4,10 +4,19 @@ dataset:
   # Independent roots supplied by DataSphere mounts or environment variables.
   videos_dir: ${oc.env:VIDEO_DATASET_VIDEOS_DIR,data/videos}
   annotations_dir: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}
+  split_videos_dirs:
+    train: ${oc.env:VIDEO_DATASET_VIDEOS_DIR,data/videos}/VIDEOS_TRAIN/bdd100k/videos/100k/train
+    validation: ${oc.env:VIDEO_DATASET_VIDEOS_DIR,data/videos}/VIDEOS_VAL/bdd100k/videos/100k/val
+  split_annotations_dirs:
+    train: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}/train
+    validation: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}/val
+  max_sequences:
+    train: 32
+    validation: 8
   annotation_extension: ".json"
   video_extensions: [".mp4", ".mov", ".avi", ".mkv"]
   recursive: true
-  strict_pairs: true
+  strict_pairs: false
   annotation_mode: auto
   target_fps: 5.0
   max_seek_error_ms: 100.0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as functional
 from torch import Tensor, nn
 
 from ..contracts import (
@@ -168,8 +169,6 @@ class MeMOTMemoryDecoder(nn.Module):
         """Decode memory externally and preserve upstream outputs for RF-DETR loss."""
         if hypotheses.queries.shape[-1] != self.dim:
             raise ValueError("RF-DETR query dimension does not match MeMOT")
-        if hypotheses.logits.shape[-1] != self.num_classes:
-            raise ValueError("RF-DETR class count does not match MeMOT")
         memory_delta = context_output.query_delta
         if memory_delta is None:
             memory_delta = torch.zeros_like(hypotheses.queries)
@@ -179,7 +178,15 @@ class MeMOTMemoryDecoder(nn.Module):
             memory_delta + image_token
         )
         decoded = self.output_norm(self.proposal_decoder(gated))
-        logits = hypotheses.logits + self.class_delta(decoded)
+        class_delta = self.class_delta(decoded)
+        actual_classes = hypotheses.logits.shape[-1]
+        if actual_classes < self.num_classes:
+            class_delta = class_delta[..., :actual_classes]
+        elif actual_classes > self.num_classes:
+            class_delta = functional.pad(
+                class_delta, (0, actual_classes - self.num_classes)
+            )
+        logits = hypotheses.logits + class_delta
         box_logits = torch.logit(hypotheses.boxes.clamp(1e-6, 1.0 - 1e-6))
         boxes = (box_logits + self.box_delta(decoded)).sigmoid()
         association_logits = self._association_logits(decoded, context_output, state)

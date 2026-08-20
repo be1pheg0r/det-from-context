@@ -9,6 +9,7 @@ try:
 except ImportError:  # Direct ``python experiments/rfdetr_memot/run.py`` execution.
     from worker import run_rfdetr_memot
 
+from context_detection.config import load_config
 from context_detection.experiment import ExperimentProtocol
 
 
@@ -19,11 +20,12 @@ def main() -> None:
         flush=True,
     )
     protocol = ExperimentProtocol(experiment_dir.parents[1])
+    config = load_config(experiment_dir / "config.yaml")
     print("[rfdetr_memot] building train/validation/test components", flush=True)
     result_dir = protocol.execute_components(
         config_path=experiment_dir / "config.yaml",
         worker=run_rfdetr_memot,
-        splits=("train", "validation", "test"),
+        splits=tuple(config.data.splits),
         source_paths=[experiment_dir / "worker.py"],
         launch_script=__file__,
     )

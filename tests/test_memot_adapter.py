@@ -111,6 +111,16 @@ def test_memot_runs_after_unmodified_detector_forward() -> None:
     assert first_output.aux["memot"]["track_ids"].shape == (1, 4)
 
 
+def test_memot_falls_back_when_detector_has_extra_class_logits() -> None:
+    tracker, _ = _tracker()
+    tracker.memory_decoder.num_classes = 2
+    tracker.memory_decoder.class_delta = torch.nn.Linear(8, 2)
+
+    output, _ = tracker(_batch(0.0, sequence_start=True), _context())
+
+    assert output.logits.shape[-1] == 3
+
+
 def test_memot_reads_empty_context_batch_from_recurrent_state() -> None:
     torch.manual_seed(5)
     tracker, detector = _tracker()

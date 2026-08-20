@@ -100,7 +100,7 @@ class VideoDataLoaderProtocol:
         resolution = rfdetr_pretrained_resolution(variant)
         self._validate_resolution(settings, resolution)
         videos_root, annotations_root = self._resolved_roots(
-            settings, Path(config.data.config_path).parent
+            settings, Path(config.data.config_path).parent, split.value
         )
         dataset = VideoClipDataset(
             videos_root,
@@ -151,14 +151,20 @@ class VideoDataLoaderProtocol:
             )
 
     @staticmethod
-    def _resolved_roots(settings: Any, component_root: Path) -> tuple[Path, Path]:
+    def _resolved_roots(
+        settings: Any, component_root: Path, split: str
+    ) -> tuple[Path, Path]:
         def resolve(value: str) -> Path:
             path = Path(value)
             return path if path.is_absolute() else (component_root / path).resolve()
 
-        return resolve(settings.dataset.videos_dir), resolve(
-            settings.dataset.annotations_dir
+        videos = settings.dataset.split_videos_dirs.get(
+            split, settings.dataset.videos_dir
         )
+        annotations = settings.dataset.split_annotations_dirs.get(
+            split, settings.dataset.annotations_dir
+        )
+        return resolve(videos), resolve(annotations)
 
 
 PROTOCOL = VideoDataLoaderProtocol()

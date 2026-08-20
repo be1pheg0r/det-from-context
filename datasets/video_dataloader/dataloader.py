@@ -36,7 +36,7 @@ def create_video_dataloader(
     settings = VideoDataLoaderSettings.model_validate(raw)
     VideoDataLoaderProtocol._validate_resolution(settings, resolution)
     videos_root, annotations_root = VideoDataLoaderProtocol._resolved_roots(
-        settings, component_root
+        settings, component_root, split
     )
     dataset = VideoClipDataset(
         videos_root,
