@@ -40,6 +40,7 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
 
     def run(self) -> dict[str, Any]:
         """Execute native fit and publish tracking availability explicitly."""
+        self.experiment.log_message("worker 1/7: preparing RF-DETR training config")
         has_test = "test" in self.components.dataloaders
         train_config = build_rfdetr_train_config(
             self.config,
@@ -47,6 +48,7 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
             class_names=self.class_names,
             has_test_split=has_test,
         )
+        self.experiment.log_message("worker 2/7: creating Lightning MeMOT module")
         module = ComponentRFDetrMeMOTModule(
             self.tracker,
             train_config,
@@ -55,6 +57,7 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
         block_size = int(module.model_config.patch_size) * int(
             module.model_config.num_windows
         )
+        self.experiment.log_message("worker 3/7: creating Lightning data module")
         datamodule = ProjectRFDetrDataModule(
             self.components.dataloaders,
             block_size=block_size,
@@ -62,6 +65,7 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
         )
         history = MetricHistory()
         logger = ExperimentLightningLogger(self.experiment, history)
+        self.experiment.log_message("worker 4/7: building Lightning Trainer")
         trainer: Trainer = build_trainer(
             train_config,
             module.model_config,
@@ -80,6 +84,7 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
                 score_threshold=self.config.logging.prediction_score_threshold,
             )
         )
+        self.experiment.log_message("worker 5/7: registering callbacks and metadata")
         self._record_runtime_metadata(module, trainer, has_test)
         self.experiment.record_metadata(
             "memot_architecture",
@@ -94,7 +99,13 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
             },
         )
         self._publish_split_manifest()
+        self.experiment.log_message(
+            f"worker 6/7: starting trainer.fit epochs={train_config.epochs}, "
+            f"train_batches={len(self.components.dataloaders['train'])}"
+        )
         trainer.fit(module, datamodule=datamodule, ckpt_path=train_config.resume)
+        self.experiment.log_message("worker 6/7 complete: trainer.fit returned")
+        self.experiment.log_message("worker 7/7: publishing checkpoints and metrics")
         self._publish_checkpoints()
         tracking_path = self.experiment.root / "logs" / "tracking-metrics.json"
         tracking_path.write_text(
@@ -109,6 +120,7 @@ class RFDetrMeMOTExperiment(RFDetrImageExperiment):
         summary = self._summary(trainer, has_test)
         summary["external_memot"] = True
         summary["tracking"] = module.validation_tracking_result
+        self.experiment.log_message("worker 7/7 complete: outputs published")
         return summary
 
 

@@ -14,7 +14,12 @@ from context_detection.experiment import ExperimentProtocol
 
 def main() -> None:
     experiment_dir = Path(__file__).resolve().parent
+    print(
+        f"[rfdetr_memot] loading config from {experiment_dir / 'config.yaml'}",
+        flush=True,
+    )
     protocol = ExperimentProtocol(experiment_dir.parents[1])
+    print("[rfdetr_memot] building train/validation/test components", flush=True)
     result_dir = protocol.execute_components(
         config_path=experiment_dir / "config.yaml",
         worker=run_rfdetr_memot,
@@ -22,7 +27,7 @@ def main() -> None:
         source_paths=[experiment_dir / "worker.py"],
         launch_script=__file__,
     )
-    print(result_dir)
+    print(f"[rfdetr_memot] completed; result_dir={result_dir}", flush=True)
 
 
 if __name__ == "__main__":

@@ -83,6 +83,11 @@ class VideoDataLoaderProtocol:
 
     def build(self, config: ExperimentConfig, split: DatasetSplit) -> DataLoader[Any]:
         """Build one deterministic project-standard DataLoader endpoint."""
+        print(
+            f"[video_dataloader] loading component settings for split={split.value} "
+            f"from {config.data.config_path}",
+            flush=True,
+        )
         settings = self._load_settings(Path(config.data.config_path))
         if "image_size" in config.data.model_fields_set:
             raise ValueError(
@@ -122,6 +127,11 @@ class VideoDataLoaderProtocol:
             generator=torch.Generator().manual_seed(config.train.seed),
         )
         loader.video_manifest = dataset.manifest()  # type: ignore[attr-defined]
+        print(
+            f"[video_dataloader] DataLoader ready for split={split.value}: "
+            f"samples={len(dataset)}, batches={len(loader)}, workers={workers}",
+            flush=True,
+        )
         return loader
 
     @staticmethod

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from time import perf_counter
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -618,6 +619,9 @@ class ExperimentProtocol:
             launch_script=launch_script,
         )
         with experiment:
+            experiment.log_message(
+                "stage 1/6: resolving runtime component configuration"
+            )
             runtime_config: ExperimentConfig = experiment.config.model_copy(deep=True)
             runtime_config.data.config_path = str(experiment.dataset_config_path)
             dataset_component = experiment.component_directories.get(
@@ -635,11 +639,29 @@ class ExperimentProtocol:
             if dataset_num_classes is not None:
                 runtime_config.detector.num_classes = dataset_num_classes
             torch.manual_seed(runtime_config.train.seed)
+            started = perf_counter()
+            experiment.log_message(
+                f"stage 2/6: building model protocol={runtime_config.detector.name}"
+            )
             model: nn.Module = build_registered_model(runtime_config)
+            experiment.log_message(
+                f"stage 2/6 complete: model={type(model).__name__}, "
+                f"elapsed={perf_counter() - started:.1f}s"
+            )
             dataloaders: dict[str, DataLoader[Any]] = {}
             for split_name in splits:
                 split: DatasetSplit = DatasetSplit.parse(split_name)
-                dataloaders[split.value] = build_dataloader(runtime_config, split)
+                started = perf_counter()
+                experiment.log_message(
+                    f"stage 3/6: building dataloader split={split.value}"
+                )
+                loader = build_dataloader(runtime_config, split)
+                dataloaders[split.value] = loader
+                experiment.log_message(
+                    f"stage 3/6 complete: split={split.value}, "
+                    f"samples={len(loader.dataset)}, batches={len(loader)}, "
+                    f"elapsed={perf_counter() - started:.1f}s"
+                )
             components = ExperimentComponents(
                 model=model,
                 dataloaders=dataloaders,
@@ -655,13 +677,18 @@ class ExperimentProtocol:
                     "splits": sorted(dataloaders),
                 },
             )
+            experiment.log_message("stage 4/6: entering experiment worker")
             summary: Mapping[str, Any] | None = worker(
                 experiment,
                 runtime_config,
                 components,
             )
+            experiment.log_message("stage 4/6 complete: experiment worker returned")
+            experiment.log_message("stage 5/6: publishing component artifacts")
             self._publish_component_artifacts(experiment)
+            experiment.log_message("stage 5/6 complete: component artifacts published")
             if summary is not None:
+                experiment.log_message("stage 6/6: finalizing experiment summary")
                 experiment.complete(summary)
         return experiment.root
 

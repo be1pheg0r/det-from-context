@@ -6,6 +6,7 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
 import cv2
@@ -15,6 +16,11 @@ from PIL import Image
 from rfdetr.datasets.coco import make_coco_transforms_square_div_64
 from torch import Tensor
 from torch.utils.data import Dataset
+
+
+def _progress(message: str) -> None:
+    print(f"[video_dataloader] {message}", flush=True)
+
 
 if TYPE_CHECKING:
     from settings import VideoDataLoaderSettings
@@ -128,6 +134,12 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
         self.clip_len = clip_len
         self.resolution = resolution
         dataset_settings = settings.dataset
+        _progress(
+            f"initializing split={split}, videos_root={self.videos_root}, "
+            f"annotations_root={self.annotations_root}, "
+            f"recursive={dataset_settings.recursive}, "
+            f"strict_pairs={dataset_settings.strict_pairs}"
+        )
         self.frame_reader = frame_reader or OpenCVFrameReader(
             auto_rotate=dataset_settings.auto_rotate,
             max_seek_error_ms=dataset_settings.max_seek_error_ms,
@@ -146,9 +158,16 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             gpu_postprocess=False,
         )
         self.records = self._build_records()
+        _progress(
+            f"split={split}: building clip index from {len(self.records)} records"
+        )
         self.samples = self._build_clips()
         if not self.samples:
             raise ValueError(f"video_dataloader split {split!r} contains no clips")
+        _progress(
+            f"split={split} ready: records={len(self.records)}, "
+            f"clips={len(self.samples)}"
+        )
 
     def _build_records(self) -> list[VideoRecord]:
         """Pair files by stem inside the requested logical split."""
@@ -157,17 +176,28 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
         if not self.annotations_root.is_dir():
             raise FileNotFoundError(self.annotations_root)
         dataset_settings = self.settings.dataset
+        started = perf_counter()
+        _progress(f"split={self.split}: scanning video files")
         videos = self._unique_by_stem(
             self._files_for_split(
                 self.videos_root, set(dataset_settings.video_extensions)
             ),
             "videos",
         )
+        _progress(
+            f"split={self.split}: found {len(videos)} videos in "
+            f"{perf_counter() - started:.1f}s; scanning annotations"
+        )
+        started = perf_counter()
         annotations = self._unique_by_stem(
             self._files_for_split(
                 self.annotations_root, {dataset_settings.annotation_extension}
             ),
             "annotations",
+        )
+        _progress(
+            f"split={self.split}: found {len(annotations)} annotations in "
+            f"{perf_counter() - started:.1f}s"
         )
         missing = sorted(set(videos) - set(annotations))
         orphans = sorted(set(annotations) - set(videos))
@@ -180,7 +210,14 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             raise ValueError("; ".join(details))
 
         records: list[VideoRecord] = []
-        for stem in sorted(set(videos).intersection(annotations)):
+        paired_stems = sorted(set(videos).intersection(annotations))
+        _progress(
+            f"split={self.split}: paired={len(paired_stems)}, missing={len(missing)}, "
+            f"orphans={len(orphans)}; parsing JSON annotations"
+        )
+        started = perf_counter()
+        report_every = max(1, len(paired_stems) // 20)
+        for index, stem in enumerate(paired_stems, start=1):
             frames = self._read_annotation(annotations[stem])
             mode = self._resolve_mode(frames, annotations[stem])
             records.append(
@@ -192,22 +229,41 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                     mode=mode,
                 )
             )
+            if index == 1 or index % report_every == 0 or index == len(paired_stems):
+                _progress(
+                    f"split={self.split}: parsed {index}/{len(paired_stems)} "
+                    f"annotations ({perf_counter() - started:.1f}s)"
+                )
         return records
 
     def _files_for_split(self, root: Path, extensions: set[str]) -> list[Path]:
+        started = perf_counter()
         iterator = (
             root.rglob("*") if self.settings.dataset.recursive else root.iterdir()
         )
-        return sorted(
-            path
-            for path in iterator
-            if path.is_file()
-            and path.suffix.lower() in extensions
-            and any(
-                part.lower() in self.split_names
-                for part in path.relative_to(root).parts
-            )
+        selected: list[Path] = []
+        visited = 0
+        for path in iterator:
+            visited += 1
+            if visited % 10_000 == 0:
+                _progress(
+                    f"split={self.split}: scanned {visited} paths under {root} "
+                    f"({perf_counter() - started:.1f}s)"
+                )
+            if (
+                path.is_file()
+                and path.suffix.lower() in extensions
+                and any(
+                    part.lower() in self.split_names
+                    for part in path.relative_to(root).parts
+                )
+            ):
+                selected.append(path)
+        _progress(
+            f"split={self.split}: scan complete for {root}; visited={visited}, "
+            f"selected={len(selected)}, elapsed={perf_counter() - started:.1f}s"
         )
+        return sorted(selected)
 
     @staticmethod
     def _unique_by_stem(paths: list[Path], kind: str) -> dict[str, Path]:
