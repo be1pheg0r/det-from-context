@@ -258,6 +258,8 @@ def test_rfdetr_directory_component_builds_model_protocol(
     assert _Provider.last_kwargs["resolution"] == 512
     assert _Provider.last_kwargs["num_classes"] == 31
     assert _Provider.last_kwargs["pretrain_weights"] == "rf-detr-small.pth"
+    backbone = model.detector.model.backbone
+    assert not any(parameter.requires_grad for parameter in backbone.parameters())
 
 
 @pytest.mark.filterwarnings(

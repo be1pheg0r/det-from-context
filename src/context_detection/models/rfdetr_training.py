@@ -101,12 +101,17 @@ class ProjectRFDetrDataModule(LightningDataModule):
 
     def on_before_batch_transfer(
         self,
-        batch: tuple[DetectionBatch, ContextBatch],
+        batch: tuple[DetectionBatch, ContextBatch] | list[Any],
         dataloader_idx: int,
     ) -> tuple[NestedTensor, list[dict[str, Any]]]:
-        """Convert project contracts to RF-DETR's ``NestedTensor, targets`` batch."""
+        """Convert project contracts to RF-DETR's ``NestedTensor, targets`` batch.
+
+        PyTorch's pin-memory walker converts plain tuples to lists for backwards
+        compatibility. GPU DataLoaders therefore reach this hook as a list even
+        though :class:`DetectionCollator` returns a tuple on the CPU path.
+        """
         del dataloader_idx
-        if not isinstance(batch, tuple) or len(batch) != 2:
+        if not isinstance(batch, tuple | list) or len(batch) != 2:
             raise TypeError(
                 "project RF-DETR loader must return (DetectionBatch, ContextBatch)"
             )

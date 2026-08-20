@@ -12,7 +12,7 @@ import torch
 from experiments.rfdetr_image.run import _configured_splits
 from experiments.rfdetr_image.worker import RFDetrImageExperiment, _loader_manifest
 from omegaconf import OmegaConf
-from pytorch_lightning import LightningModule
+from pytorch_lightning import LightningModule, Trainer
 from rfdetr.training import RFDETRModelModule
 from rfdetr.utilities.tensors import NestedTensor
 from torch import nn
@@ -105,6 +105,53 @@ def test_project_datamodule_converts_batches_to_native_nested_tensor() -> None:
     assert len(targets) == 2
     assert targets[0]["boxes"].shape == (1, 4)
     assert datamodule.class_names == ["car"]
+
+
+def test_project_datamodule_accepts_pin_memory_list_batch() -> None:
+    loader = _loader()
+    datamodule = ProjectRFDetrDataModule(
+        {"train": loader, "validation": loader},
+        block_size=16,
+        class_names=["car"],
+    )
+    pinned_shape = list(next(iter(loader)))
+
+    nested, targets = datamodule.on_before_batch_transfer(pinned_shape, 0)
+
+    assert isinstance(nested, NestedTensor)
+    assert len(targets) == 2
+
+
+class _ValidationModule(LightningModule):
+    """Exercise Lightning's real CombinedLoader batch wrapping."""
+
+    def validation_step(
+        self,
+        batch: tuple[NestedTensor, list[dict[str, Any]]],
+        batch_idx: int,
+    ) -> None:
+        del batch_idx
+        nested, targets = batch
+        assert isinstance(nested, NestedTensor)
+        assert len(targets) == 2
+
+
+def test_project_datamodule_accepts_lightning_combined_loader_batch() -> None:
+    loader = _loader()
+    datamodule = ProjectRFDetrDataModule(
+        {"train": loader, "validation": loader},
+        block_size=16,
+        class_names=["car"],
+    )
+    trainer = Trainer(
+        accelerator="cpu",
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        limit_val_batches=1,
+    )
+
+    trainer.validate(_ValidationModule(), datamodule=datamodule)
 
 
 def test_project_datamodule_rejects_valid_context_frames() -> None:

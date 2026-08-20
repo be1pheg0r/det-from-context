@@ -79,6 +79,7 @@ class RFDetrProtocol:
         )
         if freeze_encoder or freeze_decoder or freeze_bbox_embed or freeze_cls_embed:
             detector.freeze(
+                backbone=freeze_encoder,
                 encoder=freeze_encoder,
                 decoder=freeze_decoder,
                 bbox_embed=freeze_bbox_embed,
