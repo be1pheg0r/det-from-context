@@ -183,6 +183,7 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                 self.videos_root, set(dataset_settings.video_extensions)
             ),
             "videos",
+            strict=dataset_settings.strict_pairs,
         )
         _progress(
             f"split={self.split}: found {len(videos)} videos in "
@@ -194,6 +195,7 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                 self.annotations_root, {dataset_settings.annotation_extension}
             ),
             "annotations",
+            strict=dataset_settings.strict_pairs,
         )
         _progress(
             f"split={self.split}: found {len(annotations)} annotations in "
@@ -266,7 +268,9 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
         return sorted(selected)
 
     @staticmethod
-    def _unique_by_stem(paths: list[Path], kind: str) -> dict[str, Path]:
+    def _unique_by_stem(
+        paths: list[Path], kind: str, *, strict: bool
+    ) -> dict[str, Path]:
         result: dict[str, Path] = {}
         duplicates: dict[str, list[Path]] = {}
         for path in paths:
@@ -279,7 +283,12 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                 f"{stem}: {[str(path) for path in values]}"
                 for stem, values in list(duplicates.items())[:3]
             )
-            raise ValueError(f"duplicate {kind} stems inside split: {preview}")
+            if strict:
+                raise ValueError(f"duplicate {kind} stems inside split: {preview}")
+            _progress(
+                f"ignoring duplicate {kind} paths for {len(duplicates)} stems; "
+                f"using first sorted path. Examples: {preview}"
+            )
         return result
 
     def _read_annotation(self, path: Path) -> tuple[AnnotatedFrame, ...]:

@@ -224,6 +224,31 @@ def test_split_discovery_and_strict_pairing_are_independent_between_roots(
         )
 
 
+def test_non_strict_pairing_uses_first_duplicate_video_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    frames = [{"timestamp": 1000, "objects": [_obj(None)]}]
+    videos, annotations = _write_pair(tmp_path, "duplicate", frames)
+    duplicate_dir = videos / "second" / "train"
+    duplicate_dir.mkdir(parents=True)
+    (duplicate_dir / "duplicate.mov").touch()
+
+    dataset = VideoClipDataset(
+        videos,
+        annotations,
+        _settings(videos, annotations, strict_pairs=False),
+        split="train",
+        split_names=frozenset({"train"}),
+        clip_len=1,
+        resolution=32,
+        frame_reader=_FakeFrameReader(),
+        transform=_transform,
+    )
+
+    assert len(dataset) == 1
+    assert "ignoring duplicate videos paths for 1 stems" in capsys.readouterr().out
+
+
 def test_forced_tracking_rejects_reference_only_annotations(tmp_path: Path) -> None:
     videos, annotations = _write_pair(
         tmp_path,
