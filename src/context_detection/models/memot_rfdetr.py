@@ -18,14 +18,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 import torch
-from torch import Tensor, nn
 import torch.nn.functional as F
+from torch import Tensor, nn
 
 from ..contracts import ContextBatch, DetectionBatch, DetectorOutput
 from .detector import DetectorAdapter
-from .losses import generalized_box_iou, box_cxcywh_to_xyxy, SetCriterion
+from .losses import SetCriterion, box_cxcywh_to_xyxy, generalized_box_iou
 from .memory import MeMOTMemory, MeMOTState
-
 
 # ---------------------------------------------------------------------------
 # Small utilities
