@@ -12,6 +12,8 @@ dataset:
     validation: ${oc.env:VIDEO_DATASET_ANNOTATIONS_DIR,data/annotations}/val
   # Empty mapping disables smoke-run limits and uses every paired sequence.
   max_sequences: {}
+  # Persistent parsed-annotation cache; DataSphere points this to the S3 mount.
+  annotation_cache_dir: ${oc.env:VIDEO_DATASET_CACHE_DIR,data/cache/video_dataloader}
   annotation_extension: ".json"
   video_extensions: [".mp4", ".mov", ".avi", ".mkv"]
   recursive: true

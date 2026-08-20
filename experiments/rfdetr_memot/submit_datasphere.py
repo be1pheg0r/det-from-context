@@ -43,6 +43,7 @@ def main() -> None:
             .replace("__PROJECT_ARCHIVE__", archive_path.as_posix())
             .replace("__VIDEO_DATASET_VIDEOS_DIR__", paths["videos_dir"])
             .replace("__VIDEO_DATASET_ANNOTATIONS_DIR__", paths["annotations_dir"])
+            .replace("__VIDEO_DATASET_CACHE_DIR__", paths["cache_dir"])
             .replace("__RFDETR_MEMOT_OUTPUT_ROOT__", paths["output_root"])
         )
         config_path = temporary / "datasphere-job.yaml"
@@ -109,6 +110,7 @@ def _load_paths(path: Path) -> dict[str, str]:
     missing = [name for name, value in values.items() if not isinstance(value, str)]
     if missing:
         raise ValueError(f"{path} is missing string values: {', '.join(missing)}")
+    values["cache_dir"] = values["videos_dir"].rstrip("/") + "/.cache/video_dataloader"
     return values
 
 

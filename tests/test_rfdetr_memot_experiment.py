@@ -51,4 +51,6 @@ def test_datasphere_paths_and_template_use_independent_video_roots() -> None:
     assert paths["videos_dir"] != paths["annotations_dir"]
     assert "__VIDEO_DATASET_VIDEOS_DIR__" in template
     assert "__VIDEO_DATASET_ANNOTATIONS_DIR__" in template
+    assert "__VIDEO_DATASET_CACHE_DIR__" in template
+    assert paths["cache_dir"].endswith("/.cache/video_dataloader")
     assert "agent_specs" not in template

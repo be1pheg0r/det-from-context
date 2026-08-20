@@ -26,9 +26,15 @@ python experiments/rfdetr_memot/submit_datasphere.py
 ```bash
 VIDEO_DATASET_VIDEOS_DIR=/data/videos \
 VIDEO_DATASET_ANNOTATIONS_DIR=/data/labels \
+VIDEO_DATASET_CACHE_DIR=/data/cache/video_dataloader \
 RFDETR_MEMOT_OUTPUT_ROOT=./runs/rfdetr-memot \
 python experiments/rfdetr_memot/run.py
 ```
+
+В DataSphere кэш разобранных аннотаций автоматически хранится в
+`bdd100k_downloads/.cache/video_dataloader` на подключённом S3. Кэш повторно
+используется, пока SHA-256 fingerprint путей, размеров и времени изменения
+видео/JSON, классов и режима разметки не изменился.
 
 В `annotation_mode: auto` tracking-разметка включает association/uniqueness loss
 и HOTA/AssA/IDF1. Если JSON содержит только опорный кадр, предыдущие кадры лишь
