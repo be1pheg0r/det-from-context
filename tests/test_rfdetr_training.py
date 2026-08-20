@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
+from experiments.rfdetr_image.run import _configured_splits
+from experiments.rfdetr_image.worker import RFDetrImageExperiment, _loader_manifest
+from omegaconf import OmegaConf
 from pytorch_lightning import LightningModule
 from rfdetr.training import RFDETRModelModule
 from rfdetr.utilities.tensors import NestedTensor
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from context_detection.config import ExperimentConfig
 from context_detection.data.collate import DetectionCollator
@@ -181,3 +186,88 @@ def test_training_module_injects_component_model_without_loading_weights(
     assert seen["pretrain_weights"] is None
     assert module.model is component_model
     assert module.model_config is detector.model_config
+
+
+class _ManifestSource(Dataset[dict[str, Any]]):
+    """Expose deterministic provenance without loading real image files."""
+
+    def __len__(self) -> int:
+        return 3
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        return {"index": index}
+
+    @staticmethod
+    def manifest() -> list[dict[str, str]]:
+        return [
+            {"image": f"image-{index}.jpg", "annotation": f"image-{index}.json"}
+            for index in range(3)
+        ]
+
+
+def test_loader_manifest_preserves_subset_order() -> None:
+    wrapped = SimpleNamespace(dataset=_ManifestSource())
+    loader = SimpleNamespace(dataset=Subset(wrapped, [2, 0]))
+
+    assert _loader_manifest(loader) == [
+        {"image": "image-2.jpg", "annotation": "image-2.json"},
+        {"image": "image-0.jpg", "annotation": "image-0.json"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("split_config", "expected"),
+    [
+        (
+            {"mode": "generated", "test_fraction": 0.0},
+            ("train", "validation"),
+        ),
+        (
+            {"mode": "generated", "test_fraction": 0.1},
+            ("train", "validation", "test"),
+        ),
+        (
+            {"mode": "predefined", "test_fraction": 0.0},
+            ("train", "validation", "test"),
+        ),
+    ],
+)
+def test_configured_splits_include_declared_test(
+    tmp_path: Path,
+    split_config: dict[str, Any],
+    expected: tuple[str, ...],
+) -> None:
+    config_path = tmp_path / "dataset.yaml"
+    OmegaConf.save({"splits": split_config}, config_path)
+
+    assert _configured_splits(config_path) == expected
+
+
+def test_checkpoint_publication_applies_periodic_retention(tmp_path: Path) -> None:
+    for name in ("checkpoint_0.ckpt", "checkpoint_1.ckpt", "checkpoint_2.ckpt"):
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    (tmp_path / "best.ckpt").write_text("best", encoding="utf-8")
+    published: list[str] = []
+    metadata: dict[str, Any] = {}
+    experiment = SimpleNamespace(
+        checkpoints_dir=tmp_path,
+        save_artifact=lambda name, source: published.append(name),
+        record_metadata=lambda name, value: metadata.__setitem__(name, value),
+    )
+    runner = RFDetrImageExperiment.__new__(RFDetrImageExperiment)
+    runner.experiment = experiment
+    runner.config = ExperimentConfig(
+        output={"keep_last_checkpoints": 2},
+    )
+
+    runner._publish_checkpoints()
+
+    assert not (tmp_path / "checkpoint_0.ckpt").exists()
+    assert (tmp_path / "checkpoint_1.ckpt").is_file()
+    assert (tmp_path / "checkpoint_2.ckpt").is_file()
+    assert published == [
+        "checkpoint__best.ckpt",
+        "checkpoint__checkpoint_1.ckpt",
+        "checkpoint__checkpoint_2.ckpt",
+    ]
+    assert metadata["checkpoints"] == published

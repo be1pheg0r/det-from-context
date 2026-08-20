@@ -1,7 +1,7 @@
 # Rendered by submit_datasphere.py. The S3 connector ID is distinct from the
 # DataSphere project ID.
-name: rfdetr-image-class-adaptation-smoke
-desc: Two-epoch V100 RF-DETR class-head adaptation with ClearML tracking.
+name: rfdetr-image-native-finetune
+desc: Three-epoch V100 RF-DETR fine-tuning with native training and ClearML diagnostics.
 cmd: python3 experiments/rfdetr_image/bootstrap.py --archive ${PROJECT_ARCHIVE}
 
 # ``python: auto`` resolves third-party dependencies.  The source directories

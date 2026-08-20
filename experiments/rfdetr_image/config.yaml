@@ -1,4 +1,4 @@
-name: rfdetr-image-datasphere-smoke
+name: rfdetr-image-native-finetune
 data:
   name: image_dataloader
   component_path: datasets/image_dataloader
@@ -72,7 +72,7 @@ logging:
   max_diagnostic_images: 256
   prediction_score_threshold: 0.25
 output:
-  root: /job/s3/bt17f0k57rfieh6jugr8/rfdetr-image-runs
+  root: ${oc.env:RFDETR_OUTPUT_ROOT,/job/s3/bt17f0k57rfieh6jugr8/rfdetr-image-runs}
   checkpoint_every_n_epochs: 1
   keep_last_checkpoints: 2
   save_best: true
@@ -84,4 +84,4 @@ clearml:
   - rfdetr
   - image-dataloader
   - datasphere
-  - smoke
+  - native-training

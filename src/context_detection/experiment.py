@@ -504,7 +504,7 @@ class ExperimentProtocol:
         component_sources: list[Path] = [
             source
             for component in component_directories.values()
-            for source in (component.provider_path, component.config_path)
+            for source in self._component_source_files(component)
         ]
         self._snapshot_sources(
             root,
@@ -746,6 +746,22 @@ class ExperimentProtocol:
             seen_targets.add(destination)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+
+    @staticmethod
+    def _component_source_files(component: ComponentDirectory) -> list[Path]:
+        """Return reproducibility-relevant component files, excluding artifacts."""
+        supported = {".py", ".yaml", ".yml", ".md"}
+        sources: list[Path] = []
+        for source in component.root.rglob("*"):
+            relative = source.relative_to(component.root)
+            if (
+                source.is_file()
+                and source.suffix.lower() in supported
+                and "artifacts" not in relative.parts
+                and "__pycache__" not in relative.parts
+            ):
+                sources.append(source)
+        return sorted(sources)
 
     @staticmethod
     def _make_tracker(config: ExperimentConfig) -> ExperimentTracker:

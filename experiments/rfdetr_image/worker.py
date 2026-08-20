@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,7 @@ import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
 from rfdetr.training import build_trainer
+from torch.utils.data import Subset
 
 from context_detection.config import ExperimentConfig
 from context_detection.experiment import ExperimentComponents, ExperimentRun
@@ -94,8 +97,55 @@ class RFDetrImageExperiment:
             )
         )
         self._record_runtime_metadata(module, trainer, has_test)
+        self._publish_split_manifest()
         trainer.fit(module, datamodule=datamodule, ckpt_path=train_config.resume)
+        self._publish_checkpoints()
         return self._summary(trainer, has_test)
+
+    def _publish_split_manifest(self) -> None:
+        """Save exact split membership and a stable digest for reproducibility."""
+        splits = {
+            name: _loader_manifest(loader)
+            for name, loader in sorted(self.components.dataloaders.items())
+        }
+        canonical = json.dumps(splits, ensure_ascii=False, sort_keys=True)
+        payload = {
+            "seed": self.config.train.seed,
+            "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "counts": {name: len(samples) for name, samples in splits.items()},
+            "splits": splits,
+        }
+        manifest_path = self.experiment.root / "logs" / "dataset-splits.json"
+        manifest_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self.experiment.save_artifact("dataset-splits", manifest_path)
+        self.experiment.record_metadata(
+            "dataset_splits",
+            {"sha256": payload["sha256"], "counts": payload["counts"]},
+        )
+
+    def _publish_checkpoints(self) -> None:
+        """Apply retention to periodic checkpoints and publish retained files."""
+        periodic = sorted(
+            self.experiment.checkpoints_dir.glob("checkpoint_*.ckpt"),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+        )
+        stale = periodic[: -self.config.output.keep_last_checkpoints]
+        for path in stale:
+            path.unlink()
+        retained = sorted(
+            path
+            for path in self.experiment.checkpoints_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in {".ckpt", ".pth"}
+        )
+        published: list[str] = []
+        for checkpoint in retained:
+            artifact_name = f"checkpoint__{checkpoint.name}"
+            self.experiment.save_artifact(artifact_name, checkpoint)
+            published.append(artifact_name)
+        self.experiment.record_metadata("checkpoints", published)
 
     def _record_runtime_metadata(
         self,
@@ -162,6 +212,24 @@ def _class_names(config_path: Path) -> list[str]:
     if [class_id for _, class_id in ordered] != list(range(len(ordered))):
         raise ValueError(f"{config_path}: class IDs must be contiguous from zero")
     return [name for name, _ in ordered]
+
+
+def _loader_manifest(loader: Any) -> list[dict[str, str]]:
+    """Extract selected image/annotation pairs from a component DataLoader."""
+    dataset = loader.dataset
+    indices: list[int] | None = None
+    if isinstance(dataset, Subset):
+        indices = [int(index) for index in dataset.indices]
+        dataset = dataset.dataset
+    source = getattr(dataset, "dataset", dataset)
+    manifest_method = getattr(source, "manifest", None)
+    if not callable(manifest_method):
+        raise TypeError(
+            f"dataset {type(source).__name__} does not expose manifest() provenance"
+        )
+    manifest = manifest_method()
+    selected = manifest if indices is None else [manifest[index] for index in indices]
+    return [dict(sample) for sample in selected]
 
 
 def run_rfdetr_image(

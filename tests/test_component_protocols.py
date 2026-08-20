@@ -308,6 +308,12 @@ def test_directory_components_own_code_config_and_artifacts(tmp_path: Path) -> N
     assert (tmp_path / "models/linear_regression/artifacts/model.pt").is_file()
     assert (result_root / "artifacts/dataset__train.pt").is_file()
     assert (result_root / "artifacts/model__model.pt").is_file()
+    assert (result_root / "sources/datasets/synthetic_regression/provider.py").is_file()
+    assert (result_root / "sources/datasets/synthetic_regression/README.md").is_file()
+    assert (result_root / "sources/models/linear_regression/provider.py").is_file()
+    assert not (
+        result_root / "sources/models/linear_regression/artifacts/model.pt"
+    ).exists()
     with (result_root / "summary.json").open(encoding="utf-8") as stream:
         summary: dict[str, Any] = json.load(stream)
     assert summary["prediction_shape"] == summary["target_shape"]
