@@ -15,8 +15,8 @@ dataset:
 
 
 video:
-  videos_dir: "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bdd100k/videos/100k/train"
-  annotations_dir: "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/labels/train"
+  videos_dir: "../../bdd100k_downloads/VIDEOS_TRAIN/bdd100k/videos/100k/train"
+  annotations_dir: "../../bdd100k_downloads/bdd100k_labels/100k/train"
 
   # Опорным является последний кадр последовательности
   reference_frame: "last"

@@ -1,39 +1,31 @@
-dataset:
-  images_dir: "data/images"
-  annotations_dir: "data/json"
+# config.yaml
 
+dataset:
+  images_dir: "../out/images_test_2"
+  annotations_dir: "../out/labels3"
+
+  # Максимальное разрешение изображения.
+  # Если исходное изображение больше, оно будет уменьшено
+  # с сохранением пропорций.
   image_size:
     width: 1280
-    height: 704
-
+    height: 720
   normalize_boxes: true
 
+  # Расширения файлов изображений, которые обрабатываем
   image_extensions:
     - ".jpg"
     - ".jpeg"
     - ".png"
 
 
-video:
-  videos_dir: "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/VIDEOS_TRAIN/bdd100k/videos/100k/train"
-  annotations_dir: "/job/s3/bt17f0k57rfieh6jugr8/bdd100k_downloads/labels/train"
-
-  # Опорным является последний кадр последовательности
-  reference_frame: "last"
-
-  # Сколько кадров взять ДО опорного
-  frames_before: 4
-
-  # Сколько кадров в секунду брать
-  fps: 5
-
-
 dataloader:
-  batch_size: 4
+  batch_size: 1
   shuffle: true
   num_workers: 4
 
-  pin_memory: true
+  # Если True — возвращать target для каждого изображения
+  return_targets: true
 
 
 classes:
