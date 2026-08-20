@@ -404,7 +404,7 @@ class RFDETRMeMOT(nn.Module):
                 track_ids=track_ids,
                 track_slot_indices=torch.nn.utils.rnn.pad_sequence(
                     slot_lists, batch_first=True, padding_value=-1
-                ) if slot_lists \ 
+                ) if slot_lists
                 else torch.empty((b, 0), dtype=torch.long, device=device),
                 proposal_queries=proposal_q,
                 track_queries=track_q,
@@ -542,8 +542,8 @@ class RFDETRMeMOT(nn.Module):
         if gt_boxes.numel() == 0:
             return obj, uni, boxes, pred_boxes.new_zeros(0, dtype=torch.long)
 
-        cost = torch.cdist(pred_boxes, gt_boxes, p=1) - \ 
-            _pairwise_iou(pred_boxes, gt_boxes)
+        cost = (torch.cdist(pred_boxes, gt_boxes, p=1) - 
+            _pairwise_iou(pred_boxes, gt_boxes))
         row, col = _hungarian(cost)
         obj[row] = 1.0
         boxes[row] = gt_boxes[col]
@@ -649,7 +649,7 @@ class MeMOTClipTrainer:
             if state is None:
                 state = self.model.init_state(1, batch.images.device)
                 seen_by_batch = [set()]
-            elif (batch.is_sequence_start is not None 
+            elif (batch.is_sequence_start is not None
                   and bool(batch.is_sequence_start[0])):
                 state = state.reset(batch.is_sequence_start)
                 seen_by_batch = [set()]
