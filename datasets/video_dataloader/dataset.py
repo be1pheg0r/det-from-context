@@ -177,30 +177,39 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             raise FileNotFoundError(self.annotations_root)
         dataset_settings = self.settings.dataset
         started = perf_counter()
-        _progress(f"split={self.split}: scanning video files")
-        videos = self._unique_by_stem(
-            self._files_for_split(
-                self.videos_root, set(dataset_settings.video_extensions)
-            ),
-            "videos",
-            strict=dataset_settings.strict_pairs,
-        )
-        _progress(
-            f"split={self.split}: found {len(videos)} videos in "
-            f"{perf_counter() - started:.1f}s; scanning annotations"
-        )
-        started = perf_counter()
-        annotations = self._unique_by_stem(
-            self._files_for_split(
-                self.annotations_root, {dataset_settings.annotation_extension}
-            ),
-            "annotations",
-            strict=dataset_settings.strict_pairs,
-        )
-        _progress(
-            f"split={self.split}: found {len(annotations)} annotations in "
-            f"{perf_counter() - started:.1f}s"
-        )
+        limit = dataset_settings.max_sequences.get(self.split)
+        if limit is not None and not dataset_settings.strict_pairs:
+            videos, annotations = self._bounded_pairs(limit)
+            _progress(
+                f"split={self.split}: bounded discovery stopped after "
+                f"{len(set(videos).intersection(annotations))} matched sequences "
+                f"in {perf_counter() - started:.1f}s"
+            )
+        else:
+            _progress(f"split={self.split}: scanning video files")
+            videos = self._unique_by_stem(
+                self._files_for_split(
+                    self.videos_root, set(dataset_settings.video_extensions)
+                ),
+                "videos",
+                strict=dataset_settings.strict_pairs,
+            )
+            _progress(
+                f"split={self.split}: found {len(videos)} videos in "
+                f"{perf_counter() - started:.1f}s; scanning annotations"
+            )
+            started = perf_counter()
+            annotations = self._unique_by_stem(
+                self._files_for_split(
+                    self.annotations_root, {dataset_settings.annotation_extension}
+                ),
+                "annotations",
+                strict=dataset_settings.strict_pairs,
+            )
+            _progress(
+                f"split={self.split}: found {len(annotations)} annotations in "
+                f"{perf_counter() - started:.1f}s"
+            )
         missing = sorted(set(videos) - set(annotations))
         orphans = sorted(set(annotations) - set(videos))
         if dataset_settings.strict_pairs and (missing or orphans):
@@ -213,7 +222,6 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
 
         records: list[VideoRecord] = []
         paired_stems = sorted(set(videos).intersection(annotations))
-        limit = dataset_settings.max_sequences.get(self.split)
         if limit is not None:
             paired_stems = paired_stems[:limit]
             _progress(
@@ -244,6 +252,39 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
                     f"annotations ({perf_counter() - started:.1f}s)"
                 )
         return records
+
+    def _bounded_pairs(self, limit: int) -> tuple[dict[str, Path], dict[str, Path]]:
+        """Stop lazy file discovery as soon as enough video/JSON stems match."""
+        dataset_settings = self.settings.dataset
+        streams = (
+            iter(
+                self._iter_files_for_split(
+                    self.videos_root, set(dataset_settings.video_extensions)
+                )
+            ),
+            iter(
+                self._iter_files_for_split(
+                    self.annotations_root, {dataset_settings.annotation_extension}
+                )
+            ),
+        )
+        results: tuple[dict[str, Path], dict[str, Path]] = ({}, {})
+        exhausted = [False, False]
+        while len(set(results[0]).intersection(results[1])) < limit:
+            advanced = False
+            for index, stream in enumerate(streams):
+                if exhausted[index]:
+                    continue
+                try:
+                    path = next(stream)
+                except StopIteration:
+                    exhausted[index] = True
+                else:
+                    results[index].setdefault(path.stem, path)
+                    advanced = True
+            if not advanced:
+                break
+        return results
 
     def _files_for_split(self, root: Path, extensions: set[str]) -> list[Path]:
         started = perf_counter()
@@ -277,6 +318,25 @@ class VideoClipDataset(Dataset[dict[str, Any]]):
             f"selected={len(selected)}, elapsed={perf_counter() - started:.1f}s"
         )
         return sorted(selected)
+
+    def _iter_files_for_split(self, root: Path, extensions: set[str]) -> Any:
+        iterator = (
+            root.rglob("*") if self.settings.dataset.recursive else root.iterdir()
+        )
+        root_is_split = root.name.lower() in self.split_names
+        for path in iterator:
+            if (
+                path.is_file()
+                and path.suffix.lower() in extensions
+                and (
+                    root_is_split
+                    or any(
+                        part.lower() in self.split_names
+                        for part in path.relative_to(root).parts
+                    )
+                )
+            ):
+                yield path
 
     @staticmethod
     def _unique_by_stem(

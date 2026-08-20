@@ -73,6 +73,7 @@ def _settings(
     *,
     annotation_mode: str = "auto",
     strict_pairs: bool = True,
+    max_sequences: dict[str, int] | None = None,
 ) -> Any:
     return VideoDataLoaderSettings.model_validate(
         {
@@ -83,6 +84,7 @@ def _settings(
                 "video_extensions": [".mov"],
                 "annotation_mode": annotation_mode,
                 "strict_pairs": strict_pairs,
+                "max_sequences": max_sequences or {},
                 "target_fps": 5,
                 "patch_size": 16,
                 "num_windows": 2,
@@ -260,7 +262,13 @@ def test_forced_tracking_rejects_reference_only_annotations(tmp_path: Path) -> N
         VideoClipDataset(
             videos,
             annotations,
-            _settings(videos, annotations, annotation_mode="tracking"),
+            _settings(
+                videos,
+                annotations,
+                annotation_mode="tracking",
+                strict_pairs=False,
+                max_sequences={"train": 1},
+            ),
             split="train",
             split_names=frozenset({"train"}),
             clip_len=1,
