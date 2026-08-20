@@ -22,9 +22,9 @@ def test_experiment_config_matches_video_classes_and_external_memot() -> None:
     assert config.data.name == "video_dataloader"
     assert config.data.clip_len >= 2
     assert config.detector.num_classes == len(raw["classes"])
-    assert not config.train.denoising
+    assert config.train.denoising
     assert config.train.amp_dtype == "fp16"
-    assert not config.train.use_ema
+    assert config.train.use_ema
     assert config.data.splits == ["train", "validation"]
     assert config.logging.max_visual_images == 6
     assert config.logging.max_diagnostic_images == 256

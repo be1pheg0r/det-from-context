@@ -60,9 +60,9 @@ train:
   seed: 42
   amp: true
   amp_dtype: fp16
-  use_ema: false
+  use_ema: true
   compute_train_metrics: false
-  denoising: false
+  denoising: true
   detach_state: true
 validation:
   metrics:
