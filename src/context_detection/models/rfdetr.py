@@ -8,6 +8,7 @@ from importlib import import_module
 from types import ModuleType
 from typing import Any, cast
 
+from rfdetr.utilities import box_ops
 from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 
@@ -139,6 +140,7 @@ class RFDetrAdapter(DetectorAdapter):
         if not isinstance(hidden_dim, int) or not isinstance(num_queries, int):
             raise TypeError("RF-DETR model_config не содержит hidden_dim/num_queries")
         self.model: nn.Module = model
+        self.model_config: Any = model_config
         self._dim: int = hidden_dim
         self.num_queries: int = num_queries
 
@@ -171,7 +173,10 @@ class RFDetrAdapter(DetectorAdapter):
             raise TypeError("RF-DETR forward обязан вернуть mapping")
         predictions: Mapping[str, Any] = cast("Mapping[str, Any]", raw_output)
         logits: Tensor = _prediction_tensor(predictions, "pred_logits")
-        boxes: Tensor = _normalized_prediction_boxes(predictions)
+        boxes: Tensor = _normalized_prediction_boxes(
+            predictions,
+            bbox_reparam=bool(getattr(self.model_config, "bbox_reparam", False)),
+        )
         query_layers: Tensor = capture.require_decoder_queries()
         decoder_layers: list[dict[str, Tensor]] = _decoder_layers(
             predictions,
@@ -183,6 +188,7 @@ class RFDetrAdapter(DetectorAdapter):
             for key, value in predictions.items()
             if key not in {"pred_logits", "pred_boxes", "aux_outputs"}
         }
+        aux["upstream_outputs"] = predictions
         return DetectorOutput(
             logits=logits,
             boxes=boxes,
@@ -365,17 +371,24 @@ def _decoder_layers(
     ]
 
 
-def _normalized_prediction_boxes(predictions: Mapping[str, Any]) -> Tensor:
-    """Convert upstream bbox logits to normalized ``cxcywh`` when needed.
+def _normalized_prediction_boxes(
+    predictions: Mapping[str, Any], *, bbox_reparam: bool = False
+) -> Tensor:
+    """Return project-contract boxes using RF-DETR's own box semantics.
 
-    RF-DETR releases differ: some apply sigmoid in the model forward, while
-    others expose the logits consumed by their own criterion.  The project
-    contract always requires coordinates in ``[0, 1]``.
+    RF-DETR with ``bbox_reparam=True`` can emit unbounded normalized ``cxcywh``
+    values.  Its official postprocessor converts them to ``xyxy`` and clamps to
+    image bounds.  Mirror that operation on the unit square for the local
+    ``DetectorOutput`` contract while keeping the untouched upstream mapping in
+    ``aux["upstream_outputs"]`` for the native criterion and postprocessor.
     """
     boxes = _prediction_tensor(predictions, "pred_boxes")
-    if boxes.numel() and (boxes.detach().amin() < 0 or boxes.detach().amax() > 1):
-        return boxes.sigmoid()
-    return boxes
+    if not boxes.numel() or (boxes.detach().amin() >= 0 and boxes.detach().amax() <= 1):
+        return boxes
+    if bbox_reparam:
+        xyxy = box_ops.box_cxcywh_to_xyxy(boxes).clamp(0.0, 1.0)
+        return box_ops.box_xyxy_to_cxcywh(xyxy)
+    return boxes.sigmoid()
 
 
 def _set_trainable(module: nn.Module, trainable: bool) -> None:

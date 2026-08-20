@@ -157,6 +157,18 @@ def test_adapter_normalizes_upstream_box_logits() -> None:
     torch.testing.assert_close(boxes, logits.sigmoid())
 
 
+def test_adapter_uses_upstream_bbox_reparam_box_semantics() -> None:
+    boxes = torch.tensor([[[-0.5, 0.5, 1.5, 0.5]]])
+
+    normalized = rfdetr_module._normalized_prediction_boxes(
+        {"pred_boxes": boxes}, bbox_reparam=True
+    )
+
+    expected_xyxy = rfdetr_module.box_ops.box_cxcywh_to_xyxy(boxes).clamp(0, 1)
+    expected = rfdetr_module.box_ops.box_xyxy_to_cxcywh(expected_xyxy)
+    torch.testing.assert_close(normalized, expected)
+
+
 def test_adapter_without_query_override_matches_upstream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
