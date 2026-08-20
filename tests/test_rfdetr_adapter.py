@@ -15,6 +15,7 @@ from context_detection.build import build_model
 from context_detection.config import ExperimentConfig
 from context_detection.contracts import ContextBatch, DetectionBatch
 from context_detection.models import rfdetr as rfdetr_module
+from context_detection.models.memot import MeMOTTracker
 from context_detection.models.rfdetr import (
     RFDETR_PRETRAINED_RESOLUTIONS,
     RFDetrAdapter,
@@ -89,7 +90,11 @@ class _UpstreamModel(nn.Module):
         self.class_embed = nn.Linear(4, 2)
         self.box_embed = nn.Linear(4, 4)
 
-    def forward(self, images: Tensor) -> dict[str, Any]:
+    def forward(
+        self, images: Any, targets: list[dict[str, Tensor]] | None = None
+    ) -> dict[str, Any]:
+        del targets
+        images = getattr(images, "tensors", images)
         features, positions, _ = self.backbone(images)
         sources: list[Tensor] = [feature.tensors for feature in features]
         masks: list[Tensor] = [
@@ -286,6 +291,51 @@ def test_rfdetr_directory_component_builds_model_protocol(
     assert _Provider.last_kwargs["pretrain_weights"] == "rf-detr-small.pth"
     backbone = model.detector.model.backbone
     assert not any(parameter.requires_grad for parameter in backbone.parameters())
+
+
+def test_rfdetr_directory_component_builds_external_memot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_rfdetr(monkeypatch)
+    config = ExperimentConfig.model_validate(
+        {
+            "data": {
+                "name": "dummy",
+                "context_k": 0,
+                "context_strategy": "empty",
+                "clip_len": 2,
+            },
+            "detector": {
+                "name": "rfdetr",
+                "component_path": "models/rfdetr",
+                "config_path": "models/rfdetr/config.yaml",
+                "dim": 4,
+                "num_classes": 2,
+                "num_heads": 1,
+            },
+            "context": {
+                "name": "memot",
+                "num_slots": 3,
+                "memory_length": 4,
+                "short_memory_length": 2,
+                "memory_decoder_layers": 1,
+                "write_threshold": 0.0,
+            },
+        }
+    )
+
+    model = build_model(config)
+    output, state = model(
+        _batch(batch_size=1),
+        ContextBatch(
+            valid_mask=torch.zeros(1, 0, dtype=torch.bool),
+            time_offsets=torch.zeros(1, 0),
+        ),
+    )
+
+    assert isinstance(model, MeMOTTracker)
+    assert output.aux["memot"]["association_logits"].shape == (1, 3, 4)
+    assert state.valid.sum() == 3
 
 
 @pytest.mark.filterwarnings(

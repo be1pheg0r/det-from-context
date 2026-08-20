@@ -1,0 +1,190 @@
+# Имя эксперимента в логах, артефактах и метаданных.
+name: rfdetr-memot-video-finetune
+
+# Источник данных и способ формирования временных клипов.
+data:
+  # Зарегистрированный provider видеодатасета.
+  name: video_dataloader
+  # Каталог Python-компонента provider относительно корня проекта.
+  component_path: datasets/video_dataloader
+  # YAML с путями к видео/разметке и параметрами их чтения.
+  config_path: datasets/video_dataloader/config.yaml
+  # Общий root не используется: видео и разметка задаются раздельно.
+  root: null
+  # Число дополнительных context-кадров; MeMOT переносит своё состояние сам.
+  context_k: 0
+  # Не создавать отдельный ContextBatch из изображений.
+  context_strategy: empty
+  # Последовательных кадров в одном клипе с общей памятью MeMOT.
+  clip_len: 8
+  # Сплиты, для которых будут построены DataLoader-ы.
+  splits: [train, validation]
+  # Аугментации, одинаково применяемые ко всем кадрам одного клипа.
+  augmentations:
+  - horizontal_flip
+  - color_jitter
+
+# Покадровый детектор RF-DETR, выдающий гипотезы для MeMOT.
+detector:
+  # Зарегистрированное имя детектора.
+  name: rfdetr
+  # Каталог адаптера RF-DETR относительно корня проекта.
+  component_path: models/rfdetr
+  # Базовая конфигурация компонента RF-DETR.
+  config_path: models/rfdetr/config.yaml
+  # Размер предобученной архитектуры RF-DETR.
+  variant: medium
+  # Явный checkpoint; null использует стандартные предобученные веса variant.
+  weights: null
+  # Не обновлять backbone во время fine-tuning.
+  freeze_backbone: true
+  # Обучать transformer decoder детектора.
+  freeze_decoder: false
+  # null оставляет политику заморозки encoder значению RF-DETR по умолчанию.
+  freeze_encoder: null
+  # Обучать голову регрессии bounding box.
+  freeze_bbox_embed: false
+  # Обучать голову классификации.
+  freeze_cls_embed: false
+  # Число object queries RF-DETR на кадр.
+  num_queries: 300
+  # Размерность признаков RF-DETR и MeMOT.
+  dim: 256
+  # Число классов BDD100K, не считая background.
+  num_classes: 10
+  # Число attention heads в совместимых transformer-блоках.
+  num_heads: 8
+  # Число decoder-слоёв RF-DETR.
+  num_decoder_layers: 3
+
+# Внешняя память и ассоциация MeMOT поверх результатов RF-DETR.
+context:
+  # Зарегистрированный temporal-модуль.
+  name: memot
+  # Способ объединения исходных и memory-conditioned признаков.
+  fusion: residual
+  # Максимальное число одновременно хранимых track-слотов.
+  num_slots: 64
+  # Максимальная длина долговременной истории каждого track-слота.
+  memory_length: 24
+  # Число последних состояний в short-term memory.
+  short_memory_length: 3
+  # Глубина memory decoder.
+  memory_decoder_layers: 1
+  # Минимальная confidence гипотезы для записи в память.
+  write_threshold: 0.35
+  # Сколько кадров track может отсутствовать до удаления из памяти.
+  max_missed: 12
+  # Минимальный IoU для допустимой геометрической ассоциации.
+  association_iou_threshold: 0.1
+  # Минимальная cosine similarity для ассоциации по признакам.
+  association_cosine_threshold: 0.5
+  # Вес appearance similarity относительно геометрии при ассоциации.
+  association_appearance_weight: 0.25
+  # Множитель association loss в общем loss.
+  association_loss_weight: 1.0
+  # Множитель штрафа за назначение нескольких гипотез одному track.
+  uniqueness_loss_weight: 0.1
+  # EMA-коэффициент обновления оценки скорости объекта.
+  motion_momentum: 0.8
+  # false использует пороговую, а не обучаемую gate-запись в память.
+  write_gate: false
+  # Модель экстраполяции положения track между кадрами.
+  motion: constant_velocity
+  # Дополнительный горизонт предсказания движения; 0 означает текущий шаг.
+  horizon: 0
+
+# Оптимизация модели.
+train:
+  # Число полных проходов по train split.
+  epochs: 10
+  # Базовый learning rate.
+  lr: 0.0001
+  # Число клипов на GPU за один forward/backward; безопасно для V100 32 GB.
+  batch_size: 1
+  # Число batch-ей, чьи градиенты суммируются перед optimizer step.
+  grad_accum: 4
+  # Алгоритм оптимизации.
+  optimizer: adamw
+  # L2/decoupled weight decay для AdamW.
+  weight_decay: 0.0001
+  # Число эпох линейного прогрева learning rate.
+  warmup_epochs: 1
+  # Множитель LR для detection heads.
+  head_lr_multiplier: 1.0
+  # Множитель LR для decoder.
+  decoder_lr_multiplier: 0.5
+  # Множитель LR для backbone, если он разморожен.
+  backbone_lr_multiplier: 0.05
+  # Число CPU-процессов DataLoader на split.
+  num_workers: 6
+  # Seed для инициализации, shuffle и воспроизводимости.
+  seed: 42
+  # Использовать automatic mixed precision.
+  amp: true
+  # Тип AMP на V100; fp16 поддерживается аппаратно.
+  amp_dtype: fp16
+  # Вести exponential moving average весов модели.
+  use_ema: true
+  # Не считать train mAP, чтобы не тратить дополнительное время.
+  compute_train_metrics: false
+  # Включить denoising queries RF-DETR при обучении.
+  denoising: true
+  # Разрывать autograd-граф памяти между кадрами клипа.
+  detach_state: true
+
+# Оценка на validation split.
+validation:
+  # Набор вычисляемых detection/tracking метрик.
+  metrics:
+  - map
+  - map_50
+  - hota
+  - assa
+  - idf1
+  # Запускать validation после каждой эпохи.
+  every_n_epochs: 1
+  # Число validation-клипов за один forward.
+  batch_size: 1
+
+# Текстовые логи и диагностические визуализации.
+logging:
+  # Минимальный уровень сообщений.
+  level: INFO
+  # Интервал train-логов в optimizer/batch шагах.
+  every_n_steps: 20
+  # Интервал полных наборов PNG-диагностик в эпохах.
+  visualize_every_n_epochs: 1
+  # Максимум кадров в компактных визуализациях и prediction GIF.
+  max_visual_images: 6
+  # Максимум примеров, накапливаемых для диагностик за эпоху.
+  max_diagnostic_images: 256
+  # Минимальная confidence отображаемого и отслеживаемого предсказания.
+  prediction_score_threshold: 0.25
+
+# Локальные результаты, checkpoints и итоговые метрики.
+output:
+  # Каталог запуска; переменная окружения имеет приоритет над default-путём.
+  root: ${oc.env:RFDETR_MEMOT_OUTPUT_ROOT,/job/s3/bt17f0k57rfieh6jugr8/rfdetr-memot-runs}
+  # Интервал сохранения checkpoint в эпохах.
+  checkpoint_every_n_epochs: 1
+  # Сколько последних периодических checkpoint оставлять.
+  keep_last_checkpoints: 1
+  # Не создавать отдельный checkpoint лучшей эпохи.
+  save_best: false
+  # Основная метрика для выбора лучшей модели, если save_best=true.
+  monitor: map
+
+# Публикация хода эксперимента в ClearML.
+clearml:
+  # Включить ClearML logger и загрузку артефактов.
+  enabled: true
+  # Проект ClearML, внутри которого создаётся task.
+  project_name: context-detection
+  # Метки для поиска и группировки task в ClearML.
+  tags:
+  - rfdetr
+  - memot
+  - video
+  - datasphere
+  - native-training

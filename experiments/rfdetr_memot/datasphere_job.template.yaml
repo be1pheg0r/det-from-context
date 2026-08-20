@@ -1,0 +1,38 @@
+name: rfdetr-memot-video-finetune
+desc: RF-DETR hypotheses with external MeMOT memory, native training and ClearML.
+cmd: python3 experiments/rfdetr_memot/bootstrap.py --archive ${PROJECT_ARCHIVE}
+
+inputs:
+  - "__PROJECT_ARCHIVE__": PROJECT_ARCHIVE
+
+env:
+  python:
+    type: auto
+    root-paths:
+      - experiments/rfdetr_memot/bootstrap.py
+  vars:
+    - CLEARML_API_ACCESS_KEY
+    - CLEARML_API_SECRET_KEY
+    - CLEARML_API_HOST
+    - CLEARML_WEB_HOST
+    - CLEARML_FILES_HOST
+    - VIDEO_DATASET_VIDEOS_DIR: __VIDEO_DATASET_VIDEOS_DIR__
+    - VIDEO_DATASET_ANNOTATIONS_DIR: __VIDEO_DATASET_ANNOTATIONS_DIR__
+    - VIDEO_DATASET_CACHE_DIR: __VIDEO_DATASET_CACHE_DIR__
+    - RFDETR_MEMOT_OUTPUT_ROOT: __RFDETR_MEMOT_OUTPUT_ROOT__
+    - PYTHONPATH: src
+    - PYTHONUNBUFFERED: "1"
+
+s3-mounts:
+  - __S3_CONNECTOR_ID__
+
+flags:
+  - attach-project-disk
+cloud-instance-types:
+  - g1.1
+working-storage:
+  type: SSD
+  size: 150Gb
+graceful-shutdown:
+  signal: SIGTERM
+  timeout: 120s

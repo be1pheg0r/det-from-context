@@ -1,0 +1,9 @@
+# Change this file when the Object Storage layout changes.
+s3:
+  connector_id: bt17f0k57rfieh6jugr8
+
+data:
+  videos_dir: /job/s3/${s3.connector_id}/bdd100k_downloads
+  annotations_dir: /job/s3/${s3.connector_id}/bdd100k_downloads/labels
+
+output_root: /job/s3/${s3.connector_id}/rfdetr-memot-runs

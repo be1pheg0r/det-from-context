@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
@@ -56,6 +56,9 @@ class DataConfig(_Section):
     clip_len: int = Field(4, ge=1)
     image_size: int = Field(224, gt=0)
     augmentations: list[str] = Field(default_factory=list)
+    splits: list[Literal["train", "validation", "test"]] = Field(
+        default_factory=lambda: ["train", "validation"]
+    )
 
     @model_validator(mode="after")
     def _check(self) -> DataConfig:
@@ -114,7 +117,10 @@ class ContextConfig(_Section):
     association_iou_threshold: float = Field(0.1, ge=0.0, le=1.0)
     association_cosine_threshold: float = Field(0.5, ge=-1.0, le=1.0)
     association_appearance_weight: float = Field(0.25, ge=0.0)
+    association_loss_weight: float = Field(1.0, ge=0.0)
+    uniqueness_loss_weight: float = Field(0.1, ge=0.0)
     motion_momentum: float = Field(0.8, ge=0.0, lt=1.0)
+    memory_decoder_layers: int = Field(2, gt=0)
     write_gate: bool = False
     motion: str | None = None
     horizon: int = Field(0, ge=0)
@@ -146,6 +152,9 @@ class TrainConfig(_Section):
     num_workers: int = Field(4, ge=0)
     seed: int = Field(42, ge=0)
     amp: bool = True
+    amp_dtype: Literal["auto", "bf16", "fp16"] = "auto"
+    use_ema: bool = True
+    compute_train_metrics: bool = False
     denoising: bool = True
     #: False = полный BPTT по клипу. Не запрещаем — иногда нужно для проверки
     #: гипотезы, — но по умолчанию это прямой путь в OOM.

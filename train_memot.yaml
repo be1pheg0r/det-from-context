@@ -4,11 +4,11 @@ cmd:  python3 -m  src.train_memot_batch_v6 configs/memory_memot.yaml --video-con
 env:
   python:
     type: auto
-s3-mounts: 
+s3-mounts:
   - bt17f0k57rfieh6jugr8
 inputs:
   - configs/
   - datasets/video_dataloader/config.yaml
   - models/rfdetr/
 cloud-instance-types:
-  - g1.1 
+  - g1.1

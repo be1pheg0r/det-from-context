@@ -213,6 +213,58 @@ class ContextBatch(_Contract):
         return self
 
 
+class DetectionClipBatch(_Contract):
+    """Последовательность синхронных detection/context шагов.
+
+    ``steps`` хранит временную ось снаружи обычных проектных контрактов: каждый
+    элемент является полноценным батчем одного момента времени. Такой формат не
+    смешивает измерения ``B`` и ``T`` и позволяет recurrent-модели переносить
+    состояние строго по порядку. ``supervision_mask[t, b]`` отмечает кадры, для
+    которых действительно существует разметка; reference-frame датасеты могут
+    использовать неразмеченные предыдущие кадры только для прогрева памяти.
+    """
+
+    steps: list[tuple[DetectionBatch, ContextBatch]]
+    supervision_mask: Tensor  # [T, B] bool
+    mode: str = "tracking"
+
+    @property
+    def clip_len(self) -> int:
+        """Вернуть число временных шагов в клипе."""
+        return len(self.steps)
+
+    @property
+    def batch_size(self) -> int:
+        """Вернуть общий размер батча всех временных шагов."""
+        return self.steps[0][0].batch_size
+
+    @model_validator(mode="after")
+    def _check(self) -> DetectionClipBatch:
+        if not self.steps:
+            raise ValueError("DetectionClipBatch не может быть пустым")
+        batch_size = self.steps[0][0].batch_size
+        device = self.steps[0][0].images.device
+        for index, (detection, context) in enumerate(self.steps):
+            if detection.batch_size != batch_size:
+                raise ValueError(
+                    f"steps[{index}]: B={detection.batch_size}, ожидалось {batch_size}"
+                )
+            if context.valid_mask.shape[0] != batch_size:
+                raise ValueError(
+                    f"steps[{index}]: ContextBatch имеет несовместимый размер B"
+                )
+            if detection.images.device != device:
+                raise ValueError("временные шаги DetectionClipBatch на разных device")
+        _shape("supervision_mask", self.supervision_mask, len(self.steps), batch_size)
+        if self.supervision_mask.dtype != torch.bool:
+            raise ValueError("supervision_mask должен быть bool")
+        if self.supervision_mask.device != device:
+            raise ValueError("supervision_mask и steps находятся на разных device")
+        if self.mode not in {"tracking", "reference_frame"}:
+            raise ValueError(f"неизвестный video annotation mode {self.mode!r}")
+        return self
+
+
 class DetectorOutput(_Contract):
     """Выход детектора в общем виде.
 

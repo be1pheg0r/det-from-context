@@ -21,6 +21,7 @@ from .memory import (
     NoContext,
     StreamQueue,
 )
+from .memot import MeMOTMemoryDecoder, MeMOTMemoryEncoder, MeMOTTracker
 from .wrapper import ContextDetector
 
 
@@ -139,12 +140,7 @@ class ContextDetectorModelProtocol:
     def build(self, config: ExperimentConfig) -> nn.Module:
         """Собрать текущий detector + context pipeline без изменения forward."""
         detector: DetectorAdapter = self.build_detector(config)
-        return ContextDetector(
-            detector=detector,
-            context_module=build_context_module(config),
-            fusion=config.context.fusion,
-            detach_state=config.train.detach_state,
-        )
+        return build_context_model(detector, config)
 
 
 _CONTEXT_MODULES: dict[str, type[ContextModule]] = {
@@ -183,6 +179,32 @@ def build_context_module(config: ExperimentConfig) -> ContextModule:
             motion_momentum=config.context.motion_momentum,
         )
     return context_type()
+
+
+def build_context_model(
+    detector: DetectorAdapter, config: ExperimentConfig
+) -> nn.Module:
+    """Wrap a detector while keeping MeMOT strictly outside its forward path."""
+    context_module = build_context_module(config)
+    if isinstance(context_module, MeMOTMemory):
+        return MeMOTTracker(
+            detector=detector,
+            memory_encoder=MeMOTMemoryEncoder(context_module),
+            memory_decoder=MeMOTMemoryDecoder(
+                dim=config.detector.dim,
+                num_heads=config.detector.num_heads,
+                num_classes=config.detector.num_classes,
+                num_slots=config.context.num_slots,
+                num_layers=config.context.memory_decoder_layers,
+            ),
+            detach_state=config.train.detach_state,
+        )
+    return ContextDetector(
+        detector=detector,
+        context_module=context_module,
+        fusion=config.context.fusion,
+        detach_state=config.train.detach_state,
+    )
 
 
 def _build_dummy_detector(config: ExperimentConfig) -> DetectorAdapter:

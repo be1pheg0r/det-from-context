@@ -1,56 +1,58 @@
+"""Standalone helper for inspecting the video component outside an experiment."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
 import torch
+from omegaconf import OmegaConf
+from provider import (
+    VideoClipCollator,
+    VideoClipDataset,
+    VideoDataLoaderProtocol,
+    VideoDataLoaderSettings,
+)
 from torch.utils.data import DataLoader
 
-from .dataset import VideoDataset
 
-
-def video_collate_fn(batch):
-    """
-    Собирает batch для VideoDataset.
-
-    Один элемент batch:
-        frames:  [T, C, H, W]
-        target:  dict
-
-    После collate:
-
-        frames:
-            [B, T, C, H, W]
-
-        targets:
-            list[dict]
-    """
-
-    frames = []
-    targets = []
-
-    for sample_frames, sample_target in batch:
-        frames.append(sample_frames)
-        targets.append(sample_target)
-
-    # [B, T, C, H, W]
-    frames = torch.stack(frames, dim=0)
-
-    return frames, targets
-
-
-def create_video_dataloader(config):
-    """
-    Создаёт VideoDataset и DataLoader
-    на основе config.yaml.
-    """
-
-    dataset = VideoDataset(config)
-
-    dataloader_config = config["dataloader"]
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=dataloader_config["batch_size"],
-        shuffle=dataloader_config["shuffle"],
-        num_workers=dataloader_config["num_workers"],
-        pin_memory=dataloader_config.get("pin_memory", True),
-        collate_fn=video_collate_fn,
+def create_video_dataloader(
+    config: str | Path | dict[str, Any],
+    *,
+    split: str = "train",
+    clip_len: int = 4,
+    resolution: int = 560,
+) -> DataLoader[Any]:
+    """Create a clip loader directly from a component YAML or mapping."""
+    if isinstance(config, dict):
+        raw = config
+        component_root = Path.cwd()
+    else:
+        config_path = Path(config).resolve()
+        raw = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+        component_root = config_path.parent
+    if not isinstance(raw, dict):
+        raise TypeError("video_dataloader config must be a mapping")
+    settings = VideoDataLoaderSettings.model_validate(raw)
+    VideoDataLoaderProtocol._validate_resolution(settings, resolution)
+    videos_root, annotations_root = VideoDataLoaderProtocol._resolved_roots(
+        settings, component_root, split
     )
-
-    return dataloader
+    dataset = VideoClipDataset(
+        videos_root,
+        annotations_root,
+        settings,
+        split=split,
+        split_names=settings.splits.names(split),
+        clip_len=clip_len,
+        resolution=resolution,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=settings.dataloader.batch_size,
+        shuffle=settings.dataloader.shuffle and split == "train",
+        num_workers=settings.dataloader.num_workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=settings.dataloader.num_workers > 0,
+        collate_fn=VideoClipCollator(),
+    )

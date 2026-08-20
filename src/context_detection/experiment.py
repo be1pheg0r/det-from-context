@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from time import perf_counter
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -79,6 +80,10 @@ class ExperimentTracker(ABC):
         """Передать изображение в мониторинг запуска."""
 
     @abstractmethod
+    def log_media(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать анимированный или иной media-файл в мониторинг запуска."""
+
+    @abstractmethod
     def complete(self) -> None:
         """Отметить запуск успешно завершённым."""
 
@@ -102,6 +107,9 @@ class LocalTracker(ExperimentTracker):
 
     def log_image(self, title: str, series: str, step: int, path: Path) -> None:
         """Не дублировать локальное изображение."""
+
+    def log_media(self, title: str, series: str, step: int, path: Path) -> None:
+        """Не дублировать локальный media-файл."""
 
     def complete(self) -> None:
         """Локальный статус обновляет сам запуск."""
@@ -168,6 +176,16 @@ class ClearMLTracker(ExperimentTracker):
             iteration=step,
             local_path=str(path),
             max_image_history=-1,
+        )
+
+    def log_media(self, title: str, series: str, step: int, path: Path) -> None:
+        """Передать анимацию в ClearML Debug Samples как media."""
+        self._logger.report_media(
+            title=title,
+            series=series,
+            iteration=step,
+            local_path=str(path),
+            max_history=-1,
         )
 
     def complete(self) -> None:
@@ -308,6 +326,13 @@ class ExperimentRun:
         if not source.is_file():
             raise FileNotFoundError(source)
         self.tracker.log_image(title, series, step, source)
+
+    def log_media(self, title: str, series: str, step: int, path: str | Path) -> None:
+        """Передать media-файл tracker-у после проверки локального файла."""
+        source: Path = Path(path).resolve()
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        self.tracker.log_media(title, series, step, source)
 
     def complete(self, summary: Mapping[str, Any] | None = None) -> None:
         """Зафиксировать итог и успешно закрыть запуск."""
@@ -594,6 +619,9 @@ class ExperimentProtocol:
             launch_script=launch_script,
         )
         with experiment:
+            experiment.log_message(
+                "stage 1/6: resolving runtime component configuration"
+            )
             runtime_config: ExperimentConfig = experiment.config.model_copy(deep=True)
             runtime_config.data.config_path = str(experiment.dataset_config_path)
             dataset_component = experiment.component_directories.get(
@@ -611,11 +639,29 @@ class ExperimentProtocol:
             if dataset_num_classes is not None:
                 runtime_config.detector.num_classes = dataset_num_classes
             torch.manual_seed(runtime_config.train.seed)
+            started = perf_counter()
+            experiment.log_message(
+                f"stage 2/6: building model protocol={runtime_config.detector.name}"
+            )
             model: nn.Module = build_registered_model(runtime_config)
+            experiment.log_message(
+                f"stage 2/6 complete: model={type(model).__name__}, "
+                f"elapsed={perf_counter() - started:.1f}s"
+            )
             dataloaders: dict[str, DataLoader[Any]] = {}
             for split_name in splits:
                 split: DatasetSplit = DatasetSplit.parse(split_name)
-                dataloaders[split.value] = build_dataloader(runtime_config, split)
+                started = perf_counter()
+                experiment.log_message(
+                    f"stage 3/6: building dataloader split={split.value}"
+                )
+                loader = build_dataloader(runtime_config, split)
+                dataloaders[split.value] = loader
+                experiment.log_message(
+                    f"stage 3/6 complete: split={split.value}, "
+                    f"samples={len(loader.dataset)}, batches={len(loader)}, "
+                    f"elapsed={perf_counter() - started:.1f}s"
+                )
             components = ExperimentComponents(
                 model=model,
                 dataloaders=dataloaders,
@@ -631,13 +677,18 @@ class ExperimentProtocol:
                     "splits": sorted(dataloaders),
                 },
             )
+            experiment.log_message("stage 4/6: entering experiment worker")
             summary: Mapping[str, Any] | None = worker(
                 experiment,
                 runtime_config,
                 components,
             )
+            experiment.log_message("stage 4/6 complete: experiment worker returned")
+            experiment.log_message("stage 5/6: publishing component artifacts")
             self._publish_component_artifacts(experiment)
+            experiment.log_message("stage 5/6 complete: component artifacts published")
             if summary is not None:
+                experiment.log_message("stage 6/6: finalizing experiment summary")
                 experiment.complete(summary)
         return experiment.root
 
